@@ -19,8 +19,6 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
-#include <tbb/blocked_range.h>
-#include <tbb/parallel_for.h>
 
 #include "zone_models_gpu.cuh"
 #include "ros/ros.h"
@@ -88,7 +86,7 @@ struct Patch {
 
   int status_ = NOT_ASSIGNED;
 
-  PCAFeature feature_;
+//  PCAFeature feature_;
 
   pcl::PointCloud<PointT> cloud_;
   pcl::PointCloud<PointT> ground_;

@@ -24,6 +24,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl_ros/point_cloud.h>
 #include <tf/tf.h>
+#include <boost/format.hpp>
 // CLASSES
 #define SENSOR_HEIGHT 1.73
 

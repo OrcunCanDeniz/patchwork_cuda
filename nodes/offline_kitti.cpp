@@ -86,7 +86,7 @@ sensor_msgs::PointCloud2 cloud2msg(pcl::PointCloud<T> cloud, std::string frame_i
 }
 
 int main(int argc, char **argv) {
-  ros::init(argc, argv, "Offline KITTI");
+  ros::init(argc, argv, "OfflineKITTI");
 
   ros::NodeHandle nh;
   int start_frame, end_frame;

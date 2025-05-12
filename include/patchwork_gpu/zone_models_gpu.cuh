@@ -13,10 +13,7 @@
 #include "patchwork/zone_models.hpp"
 
 #include "cuda_utils.cuh"
-
-#define INVALID_RING_IDX -1
-#define OVERFLOWED_IDX -2
-
+#include "pcl/point_cloud.h"
 __constant__ float cnst_sqr_boundary_ranges[256];
 __constant__ std::size_t cnst_boundary_ranges_size;
 __constant__ float cnst_sqr_max_range;
@@ -27,8 +24,11 @@ template<typename PointT>
 class ConcentricZoneModelGPU: public ConcentricZoneModel
 {
   std::size_t max_num_pts{0};
-  int2 *pt_patch_coord_d{nullptr};
   cudaPitchedPtr* patches_d{nullptr};
+  std::size_t patches_size{0};
+  cudaPitchedPtr* num_pts_in_patch_d{nullptr};
+  std::size_t num_pts_in_patch_size{0};
+  PointT* cloud_in_d_{nullptr};
 
   public:
   ConcentricZoneModelGPU(const std::string &sensor_model,
@@ -53,24 +53,45 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
 
   void mallocCuda()
   {
-    CUDA_CHECK(cudaMalloc((void**)&pt_patch_coord_d, sizeof(int2) * max_num_pts));
-
     // create 3d cuda memory for compacted patches as (ring, sector, points)
-    std::size_t total_ring_num = std::accumulate(sensor_config_.num_rings_for_each_zone_.begin(),
-                                                  sensor_config_.num_rings_for_each_zone_.end(), 0);
-    std::size_t total_sector_num = std::accumulate(sensor_config_.num_sectors_for_each_zone_.begin(),
-                                                   sensor_config_.num_sectors_for_each_zone_.end(), 0);
-    cudaExtent extent = make_cudaExtent(total_ring_num*sizeof(PointT), total_sector_num, MAX_POINTS_PER_PATCH);
-    CUDA_CHECK(cudaMalloc3D(patches_d, extent));
+    std::size_t max_sector_num_in_ring = *std::max_element(num_sectors_per_ring_.begin(),
+                                                            num_sectors_per_ring_.end());
+
+    // allocate memory for patches (ring, sector, points)
+    cudaExtent extent_patches = make_cudaExtent(num_total_rings_*sizeof(PointT),
+                                                max_sector_num_in_ring, MAX_POINTS_PER_PATCH);
+    CUDA_CHECK(cudaMalloc3D(patches_d, extent_patches));
+    patches_size = patches_d->pitch * max_sector_num_in_ring * MAX_POINTS_PER_PATCH;
+
+    // allocate memory for num of pts in each patch
+    cudaExtent extent_num_pts_in_patch = make_cudaExtent(num_total_rings_ * sizeof(uint16_t),
+                                                    max_sector_num_in_ring, 1);
+    CUDA_CHECK(cudaMalloc3D(num_pts_in_patch_d, extent_num_pts_in_patch));
+    num_pts_in_patch_size = num_pts_in_patch_d->pitch * max_sector_num_in_ring;
+
+    CUDA_CHECK(cudaMalloc((void**)&cloud_in_d_, sizeof(PointT) * MAX_POINTS));
+
+    reset_buffers();
+  }
+
+  void reset_buffers(cudaStream_t stream=nullptr )
+  {
+    CUDA_CHECK(cudaMemsetAsync(patches_d->ptr, 0, patches_size, stream));
+    CUDA_CHECK(cudaMemsetAsync(num_pts_in_patch_d, 0, num_pts_in_patch_size, stream));
+    CUDA_CHECK(cudaMemsetAsync(cloud_in_d_, 0, sizeof(PointT) * MAX_POINTS, stream));
   }
 
   ConcentricZoneModelGPU() = default;
 
   ~ConcentricZoneModelGPU()
   {
-    if (pt_patch_coord_d != nullptr) {
-      cudaFree(pt_patch_coord_d);
-      pt_patch_coord_d = nullptr;
+    if (patches_d) {
+      CUDA_CHECK(cudaFree(patches_d->ptr));
+      free(patches_d);
+    }
+    if (num_pts_in_patch_d) {
+      CUDA_CHECK(cudaFree(num_pts_in_patch_d->ptr));
+      free(num_pts_in_patch_d);
     }
   }
 
@@ -79,29 +100,23 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
     CUDA_CHECK(cudaMemcpyToSymbol(cnst_sqr_boundary_ranges, sqr_boundary_ranges_.data(),
                                   sizeof(float) * sqr_boundary_ranges_.size()));
     auto tmp = sqr_boundary_ranges_.size();
-    CUDA_CHECK(cudaMemcpyToSymbol(cnst_boundary_ranges_size, &tmp, sizeof(int)));
-    CUDA_CHECK(cudaMemcpyToSymbol(cnst_sqr_max_range, &sqr_max_range_, sizeof(float)));
-    CUDA_CHECK(cudaMemcpyToSymbol(cnst_num_sectors_per_ring, num_sectors_per_ring_.data(),
+    CUDA_CHECK(cudaMemcpyToSymbol(&cnst_boundary_ranges_size, &tmp, sizeof(std::size_t)));
+    CUDA_CHECK(cudaMemcpyToSymbol(&cnst_sqr_max_range, &sqr_max_range_, sizeof(float)));
+    CUDA_CHECK(cudaMemcpyToSymbol(&cnst_num_sectors_per_ring, num_sectors_per_ring_.data(),
                                   sizeof(int) * num_sectors_per_ring_.size()));
-    auto tmp2 = num_sectors_per_ring_.size();
-    CUDA_CHECK(cudaMemcpyToSymbol(cnst_num_sectors_per_ring_size, &tmp2, sizeof(int)));
   }
 
-  template<typename PointT>
-  bool launch_create_patches_kernel(PointT* in_points, int num_pc_pts, cudaStream_t& stream)
+  void toCUDA( pcl::PointCloud<PointT> pc, cudaStream_t stream=0)
   {
-    if (num_pc_pts > max_num_pts) {
-      throw std::runtime_error("Number of points in the point cloud exceeds the maximum limit.");
-    }
-
-    // Launch the kernel
-    dim3 threads(NUM_THREADS);
-    dim3 blocks(divup(num_pc_pts, NUM_THREADS));
-
-    create_patches_kernel<<<blocks, threads, 0, stream>>>(in_points, pt_patch_coord_d, num_pc_pts);
-    cudaStreamSynchronize(stream);
+    CUDA_CHECK(cudaMemcpyAsync(cloud_in_d_, pc.points.data(), pc.points.size(),
+                               cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
     CUDA_CHECK(cudaGetLastError());
   }
+
+  bool launch_create_patches_kernel(PointT* in_points, int num_pc_pts, cudaStream_t& stream);
+
+  //TODO: write function to copy patches to host maybe thrust::copy_if
 };
 
 #endif  // PATCHWORK_ZONE_MODELS_GPU_CUH

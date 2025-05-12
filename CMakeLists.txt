@@ -2,14 +2,15 @@ cmake_minimum_required(VERSION 3.0.2)
 project(patchwork)
 
 add_compile_options(-std=c++17)
-set(CMAKE_BUILD_TYPE "Release")
+set(CMAKE_BUILD_TYPE "Debug")
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(CUDA REQUIRED)
-
+set(CMAKE_CUDA_ARCHITECTURES "Auto")
+set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -Xcudafe \"--diag_suppress=20236 --diag_suppress=20012\"")
 find_package(catkin REQUIRED COMPONENTS
         geometry_msgs
         message_generation
@@ -55,7 +56,13 @@ cuda_add_library(
         patchwork_gpu
         include/patchwork_gpu/patchwork_gpu.cu
         include/patchwork_gpu/zone_models_kernels.cu
+        OPTIONS ${CUDA_NVCC_FLAGS}
 )
+add_executable(patchwork_workbench include/patchwork_gpu/patchwork_workbench.cpp)
+target_link_libraries(patchwork_workbench
+        ${catkin_LIBRARIES}
+        ${PCL_LIBRARIES}
+        patchwork_gpu)
 
 add_executable(ros_kitti nodes/ros_kitti.cpp)
 target_link_libraries(ros_kitti ${catkin_LIBRARIES} ${PCL_LIBRARIES} TBB::tbb)

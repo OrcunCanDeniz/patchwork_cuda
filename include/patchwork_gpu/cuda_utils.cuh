@@ -2,9 +2,10 @@
 // Created by orcun on 10.05.2025.
 //
 
-#ifndef PATCHWORK_CUDA_UTILS_CUH
-#define PATCHWORK_CUDA_UTILS_CUH
+#ifndef CUDA_UTILS_CUH
+#define CUDA_UTILS_CUH
 #include <cuda_runtime_api.h>
+#include <cuda_runtime.h>
 #include <cuda.h>
 
 
@@ -24,10 +25,10 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
   }
 }
 
-int divup(int a, int b)
+inline int divup(int a, int b)
 {
   /// Round up the division of a/b
   return (a + b - 1) / b;
 }
 
-#endif  // PATCHWORK_CUDA_UTILS_CUH
+#endif  // CUDA_UTILS_CUH

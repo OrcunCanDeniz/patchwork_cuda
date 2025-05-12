@@ -12,6 +12,15 @@
 #include <vector>
 
 #include "patchwork/sensor_configs.hpp"
+#include <Eigen/Core>
+
+#ifndef DEG2RAD
+#define DEG2RAD(x) ((x)*0.017453293)
+#endif
+
+#ifndef RAD2DEG
+#define RAD2DEG(x) ((x)*57.29578)
+#endif
 
 #define INVALID_RING_IDX -1
 #define OVERFLOWED_IDX -2
@@ -35,6 +44,7 @@ class ZoneModel {
 class ConcentricZoneModel : public ZoneModel {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
   ConcentricZoneModel() {}
 
   ConcentricZoneModel(const std::string &sensor_model,
