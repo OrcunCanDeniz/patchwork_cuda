@@ -11,8 +11,8 @@
 
 
 #define MAX_POINTS 300000
-#define MAX_POINTS_PER_PATCH 256
-#define NUM_THREADS 256
+#define MAX_POINTS_PER_PATCH 4096
+#define NUM_THREADS 512
 
 //define cuda error checker
 #define CUDA_CHECK(ans) { gpuAssert((ans), __FILE__, __LINE__); }

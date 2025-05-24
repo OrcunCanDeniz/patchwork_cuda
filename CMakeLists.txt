@@ -1,16 +1,37 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(patchwork)
 
+
+option(VIZ_PATCHES "VIZ_PATCHES" OFF)
+
+if (VIZ_PATCHES)
+        add_compile_definitions(VIZ_PATCHES)
+endif (VIZ_PATCHES)
+
 add_compile_options(-std=c++17)
 set(CMAKE_BUILD_TYPE "Debug")
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(CUDA REQUIRED)
 set(CMAKE_CUDA_ARCHITECTURES "Auto")
-set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} -Xcudafe \"--diag_suppress=20236 --diag_suppress=20012\"")
+list(APPEND CUDA_NVCC_FLAGS
+        -Xcudafe "--diag_suppress=20236"
+        -Xcudafe "--diag_suppress=20012"
+        -Xcudafe "--diag_suppress=20014"
+        -Xcudafe "--diag_suppress=20015"
+        -Xcudafe "--diag_suppress=20013"
+        -Xcompiler -fPIC
+        -rdc=true
+)
+
+
+set(CMAKE_CUDA_STANDARD 14)
+set(CUDA_SEPARABLE_COMPILATION ON)
+set(CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+
 find_package(catkin REQUIRED COMPONENTS
         geometry_msgs
         message_generation
@@ -54,11 +75,12 @@ include_directories(
 
 cuda_add_library(
         patchwork_gpu
-        include/patchwork_gpu/patchwork_gpu.cu
-        include/patchwork_gpu/zone_models_kernels.cu
+        lib/zone_models_kernels.cu
         OPTIONS ${CUDA_NVCC_FLAGS}
 )
-add_executable(patchwork_workbench include/patchwork_gpu/patchwork_workbench.cpp)
+
+
+add_executable(patchwork_workbench nodes/patchwork_workbench.cpp)
 target_link_libraries(patchwork_workbench
         ${catkin_LIBRARIES}
         ${PCL_LIBRARIES}

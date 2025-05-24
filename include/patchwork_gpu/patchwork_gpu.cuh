@@ -208,11 +208,15 @@ class PatchWorkGPU {
              flatness_thr_[1],
              flatness_thr_[2],
              flatness_thr_[3]);
-    ROS_INFO("Num. zones: %zu", zone_model_.num_zones_);
-    condParam(nh, "max_pts_in_cloud", max_pts_in_cld_, 300000);
+
+    zone_model_ = std::make_unique<ConcentricZoneModelGPU<PointT>>(sensor_model_, sensor_height_, min_range_, max_range_, max_pts_in_cld_);
+    ROS_INFO("Num. zones: %zu", zone_model_->num_zones_);
+
+    float tmp_max_pts_in_cld_ = 0;
+    condParam(nh, "max_pts_in_cloud", tmp_max_pts_in_cld_, 300000.f);
+    max_pts_in_cld_ = static_cast<uint32_t>(tmp_max_pts_in_cld_);
 
     // It equals to elevation_thr_.size()/flatness_thr_.size();
-    zone_model_ = ConcentricZoneModel(sensor_model_, sensor_height_, min_range_, max_range_, max_pts_in_cld_);
     num_rings_of_interest_ = elevation_thr_.size();
 
     condParam(nh, "visualize", visualize_, true);
@@ -227,30 +231,41 @@ class PatchWorkGPU {
     RevertedCloudPub = nh->advertise<sensor_msgs::PointCloud2>("/revert_pc", 100);
     RejectedCloudPub = nh->advertise<sensor_msgs::PointCloud2>("/reject_pc", 100);
 
-    const auto &num_sectors_each_zone_ = zone_model_.sensor_config_.num_sectors_for_each_zone_;
+    const auto &num_sectors_each_zone_ = zone_model_->sensor_config_.num_sectors_for_each_zone_;
     sector_sizes_ = {2 * M_PI / num_sectors_each_zone_.at(0),
                      2 * M_PI / num_sectors_each_zone_.at(1),
                      2 * M_PI / num_sectors_each_zone_.at(2),
                      2 * M_PI / num_sectors_each_zone_.at(3)};
-    std::cout << "INITIALIZATION COMPLETE" << std::endl;
 
-    initialize(regionwise_patches_, zone_model_);
+    initialize(regionwise_patches_);
 
     CUDA_CHECK(cudaMalloc((void**)&cloud_in_d, sizeof(PointT) * max_pts_in_cld_));
-    cudaStreamCreate(&stream);
+
+    cudaStreamCreate(&stream_);
+    cudaStreamCreate(&streamd2h_);
+    cudaStreamCreate(&streamh2d_);
+
+    std::cout << "INITIALIZATION COMPLETE" << std::endl;
   }
 
-  void estimate_ground(const pcl::PointCloud<PointT> &cloud_in,
-                       pcl::PointCloud<PointT> &ground,
-                       pcl::PointCloud<PointT> &nonground,
-                       double &time_taken);
+  void estimate_ground(pcl::PointCloud<PointT>* cloud_in)
+  {
+    zone_model_->create_patches(cloud_in, streamh2d_);
+  }
 
-  void toCUDA(const pcl::PointCloud<PointT> &cloud_in);
+  uint32_t get_patched_cloud(pcl::PointCloud<PointT>* pub_cloud)
+  {
+    return zone_model_->cuda_patches_to_pcl(pub_cloud, streamh2d_);
+  }
 
+  std::unique_ptr<ConcentricZoneModelGPU<PointT>> zone_model_;
+
+  cudaStream_t stream_{nullptr};
+  cudaStream_t streamd2h_{nullptr};
+  cudaStream_t streamh2d_{nullptr};
 
  private:
-  cudaStream_t stream;
-  uint32_t max_pts_in_cld_{300000};
+  long int max_pts_in_cld_{300000};
   PointT *cloud_in_d{nullptr};
 
   // For ATAT (All-Terrain Automatic heighT estimator)
@@ -286,7 +301,6 @@ class PatchWorkGPU {
 
   std::string sensor_model_;
   vector<std::pair<int, int>> patch_indices_;  // For multi-threading. {ring_idx, sector_idx}
-  ConcentricZoneModel zone_model_;
 
   vector<double> sector_sizes_;
   vector<double> ring_sizes_;
@@ -301,37 +315,36 @@ class PatchWorkGPU {
   ros::Publisher PlanePub, RevertedCloudPub, RejectedCloudPub;
   pcl::PointCloud<PointT> reverted_points_by_flatness_, rejected_points_by_elevation_;
 
-  void initialize(RegionwisePatches &patches, const ConcentricZoneModel &zone_model);
+  void initialize(RegionwisePatches &patches)
+  {
+    patches.clear();
+    patch_indices_.clear();
+    Patch<PointT> patch;
+
+    // Reserve memory in advance to boost speed
+    patch.cloud_.reserve(1000);
+    patch.ground_.reserve(1000);
+    patch.non_ground_.reserve(1000);
+
+    // In polar coordinates, `num_columns` are `num_sectors`
+    // and `num_rows` are `num_rings`, respectively
+    int num_rows = zone_model_->num_total_rings_;
+    const auto &num_sectors_per_ring = zone_model_->num_sectors_per_ring_;
+
+    for (int j = 0; j < num_rows; j++) {
+      Ring ring;
+      patch.ring_idx_ = j;
+      patch.is_close_to_origin_ = j < zone_model_->max_ring_index_in_first_zone;
+      for (int i = 0; i < num_sectors_per_ring[j]; i++) {
+        patch.sector_idx_ = i;
+        ring.emplace_back(patch);
+
+        patch_indices_.emplace_back(j, i);
+      }
+      patches.emplace_back(ring);
+    }
+  }
 };
 
-template <typename PointT>
-inline void PatchWorkGPU<PointT>::initialize(RegionwisePatches &patches,
-                                             const ConcentricZoneModel &zone_model) {
-  patches.clear();
-  patch_indices_.clear();
-  Patch<PointT> patch;
 
-  // Reserve memory in advance to boost speed
-  patch.cloud_.reserve(1000);
-  patch.ground_.reserve(1000);
-  patch.non_ground_.reserve(1000);
-
-  // In polar coordinates, `num_columns` are `num_sectors`
-  // and `num_rows` are `num_rings`, respectively
-  int num_rows = zone_model_.num_total_rings_;
-  const auto &num_sectors_per_ring = zone_model.num_sectors_per_ring_;
-
-  for (int j = 0; j < num_rows; j++) {
-    Ring ring;
-    patch.ring_idx_ = j;
-    patch.is_close_to_origin_ = j < zone_model.max_ring_index_in_first_zone;
-    for (int i = 0; i < num_sectors_per_ring[j]; i++) {
-      patch.sector_idx_ = i;
-      ring.emplace_back(patch);
-
-      patch_indices_.emplace_back(j, i);
-    }
-    patches.emplace_back(ring);
-  }
-}
 #endif  // PATCHWORK_PATCHWORK_GPU_CUH

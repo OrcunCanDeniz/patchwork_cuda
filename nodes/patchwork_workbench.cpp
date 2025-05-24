@@ -5,18 +5,22 @@
 // For disable PCL complile lib, to use PointXYZILID
 #define PCL_NO_PRECOMPILE
 #include <signal.h>
+
 #include <pcl/common/centroid.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
+
+#include "patchwork_gpu/patchwork_gpu.cuh"
 #include "tools/kitti_loader.hpp"
-#include "patchwork_gpu.cuh"
 
 using PointType = PointXYZILID;
 using namespace std;
 
 ros::Publisher CloudPublisher;
+
+boost::shared_ptr<PatchWorkGPU<PointType>> PatchworkGroundSegGPU;
 
 std::string abs_save_dir;
 std::string output_filename;
@@ -56,9 +60,16 @@ int main(int argc, char **argv) {
   condParam<bool>(&nh, "/use_sor_before_save", use_sor_before_save, false, "");
   condParam<string>(&nh, "/algorithm", algorithm, "patchwork", "");
   condParam<string>(&nh, "/seq", seq, "00", "");
-  condParam<string>(&nh, "/data_path", data_path, "/", "");
+  condParam<string>(&nh, "/data_path", data_path,
+                    "/media/orcun/orcun2tb2/kitti/labeled_dataset/sequences/04", "");
 
-  CloudPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/cloud", 100, true);
+  CloudPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/og_cloud", 100, true);
+
+#ifdef VIZ_PATCHES
+  ROS_WARN("Visualizing patches is enabled. This may cause performance issues.");
+  ros::Publisher PatchedPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/patches", 100, true);
+#endif
+
 
   signal(SIGINT, signal_callback_handler);
 
@@ -69,7 +80,7 @@ int main(int argc, char **argv) {
   condParam<float>(&nh, "max_r", max_range_, 80.0);
   condParam<float>(&nh, "min_r", min_range_, 2.7);
 
-  ConcentricZoneModelGPU<PointType> zone_model(sensor_model_, sensor_height_, max_range_, min_range_, MAX_POINTS);
+  PatchworkGroundSegGPU.reset(new PatchWorkGPU<PointType>(&nh));
 
   cout << "Target data: " << data_path << endl;
   KittiLoader loader(data_path);
@@ -77,11 +88,26 @@ int main(int argc, char **argv) {
   int N = loader.size();
   for (int n = max(0, start_frame); n < min(N, end_frame); ++n) {
     pcl::PointCloud<PointType> pc_curr;
+    pcl::PointCloud<PointType> patch_pc;
+
     loader.get_cloud(n, pc_curr);
-
-    zone_model.toCUDA(pc_curr);
-
     CloudPublisher.publish(cloud2msg(pc_curr, "map"));
+
+    PatchworkGroundSegGPU->zone_model_->reset_buffers();
+    PatchworkGroundSegGPU->estimate_ground(&pc_curr);
+
+#ifdef VIZ_PATCHES
+    patch_pc.reserve(pc_curr.size());
+    uint32_t np = PatchworkGroundSegGPU->get_patched_cloud(&patch_pc);//this causes crash
+    PatchedPublisher.publish(cloud2msg(patch_pc, "map"));
+    patch_pc.clear();
+#endif
+
+    std::cout<<"frame idx: "<<n<<std::endl;
+
+    while (std::cin.get() != ' ') {
+      // Wait for space bar input
+    }
   }
   return 0;
 }
