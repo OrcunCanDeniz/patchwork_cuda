@@ -88,7 +88,7 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
                                                             num_sectors_per_ring_.end());
 
     // allocate memory for patches (ring, sector, points)
-    cudaExtent extent_patches = make_cudaExtent(num_total_rings_*sizeof(PointT), max_num_sectors_, MAX_POINTS_PER_PATCH);
+    cudaExtent extent_patches = make_cudaExtent(num_total_rings_*sizeof(float4), max_num_sectors_, MAX_POINTS_PER_PATCH);
     CUDA_CHECK(cudaMalloc3D(&patches_d, extent_patches));
     patches_size = patches_d.pitch * patches_d.ysize * MAX_POINTS_PER_PATCH;
 
@@ -167,16 +167,26 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
     {
       for(int sector_idx=0; sector_idx< max_num_sectors_; sector_idx++)
       {
+
         auto* rowPtr = reinterpret_cast<uint*>( num_pts_in_patch_h +
-                                               sector_idx * num_pts_in_patch_d.pitch);
+                                                sector_idx * num_pts_in_patch_d.pitch);
         uint num_pts = rowPtr[ring_idx];
+
+        if (num_pts >= MAX_POINTS_PER_PATCH)
+        {
+          throw std::runtime_error("Number of points in a patch exceeds the maximum limit.");
+        }
 
         for(std::size_t pt_idx=0; pt_idx<num_pts; pt_idx++)
         {
           std::size_t row_offset = pt_idx * patches_d.ysize * patches_d.pitch +
                                   sector_idx * patches_d.pitch;
-          auto* row = reinterpret_cast<PointT*>(patches_h + row_offset);
-          PointT pt_loc = row[ring_idx];
+          auto* row = reinterpret_cast<float4*>(patches_h + row_offset);
+          float4& pt = row[ring_idx];
+          PointT pt_loc;
+          pt_loc.x = pt.x;
+          pt_loc.y = pt.y;
+          pt_loc.z = pt.z;
           //encode ring,sector info as intensity to be colorized when visualized
           pt_loc.intensity = color_map[ring_idx * max_num_sectors_ + sector_idx];
           pc->points.push_back(pt_loc);
@@ -191,11 +201,11 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
   bool create_patches(pcl::PointCloud<PointT>* pc, cudaStream_t& stream)
   {
     to_CUDA(pc, stream);
-    bool ret = launch_create_patches_kernel(pc->points.size(), stream);
+    bool ret = launch_create_patches_kernel(pc->points.size(), -sensor_height_-2.0, stream);
     return ret;
   }
 
-  bool launch_create_patches_kernel(int num_pc_pts, cudaStream_t& stream);
+  bool launch_create_patches_kernel(int num_pc_pts, float z_thresh, cudaStream_t& stream);
 
 };
 

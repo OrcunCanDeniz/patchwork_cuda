@@ -58,13 +58,14 @@ __device__ int2 get_ring_sector_idx(const float &x, const float &y)
 
 template<typename PointT>
 __global__ void create_patches_kernel( PointT *points, const cudaPitchedPtr patches,
-                                      const cudaPitchedPtr num_pts_in_patch,
+                                      const cudaPitchedPtr num_pts_in_patch, float z_thresh,
                                       int num_pts_in_cloud)
 {
   std::size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= num_pts_in_cloud) return;
 
   const PointT &pt = points[idx];
+  if (pt.z < z_thresh) return;
 
   int2 ring_sector_indices = get_ring_sector_idx(pt.x, pt.y);
 
@@ -82,12 +83,14 @@ __global__ void create_patches_kernel( PointT *points, const cudaPitchedPtr patc
   const std::size_t row_offset = cur_num_pts_in_patch * patches.ysize * patches.pitch +
                                    ring_sector_indices.y * patches.pitch ;
   const char* row = (const char*)patches.ptr + row_offset;
-  PointT* pt_loc = (PointT *)row + ring_sector_indices.x;
-  *pt_loc = pt; // store the point into patch
+  // using float4 to store point for internal representation, more compact and mem-=aligned
+  float4* pt_loc = (float4 *)row + ring_sector_indices.x;
+  *pt_loc = make_float4(pt.x, pt.y, pt.z, pt.intensity); // store the point into patch
 }
 
 template<typename PointT>
-bool ConcentricZoneModelGPU<PointT>::launch_create_patches_kernel(int num_pc_pts, cudaStream_t& stream)
+bool ConcentricZoneModelGPU<PointT>::launch_create_patches_kernel(int num_pc_pts, float z_thresh,
+                                                                  cudaStream_t& stream)
 {
   if (num_pc_pts > max_num_pts) {
     throw std::runtime_error("Number of points in the point cloud exceeds the maximum limit.");
@@ -100,7 +103,7 @@ bool ConcentricZoneModelGPU<PointT>::launch_create_patches_kernel(int num_pc_pts
   std::cout<< "Num points in OG cloud: " << num_pc_pts << std::endl;
 
   create_patches_kernel<<<blocks, threads, 0, stream>>>(cloud_in_d_, patches_d,
-                                                        num_pts_in_patch_d,
+                                                        num_pts_in_patch_d, z_thresh,
                                                         num_pc_pts);
 
   auto err = cudaGetLastError();
