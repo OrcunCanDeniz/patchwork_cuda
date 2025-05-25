@@ -2,7 +2,6 @@
 // Created by orcun on 10.05.2025.
 //
 
-#include "patchwork/utils.hpp"
 #include "patchwork_gpu/zone_models_gpu.cuh"
 // __device__ functions are inlined by default
 
@@ -89,12 +88,18 @@ __global__ void create_patches_kernel( PointT *points, const cudaPitchedPtr patc
 }
 
 template<typename PointT>
-bool ConcentricZoneModelGPU<PointT>::launch_create_patches_kernel(int num_pc_pts, float z_thresh,
+bool ConcentricZoneModelGPU<PointT>::launch_create_patches_kernel(PointT* cloud_in_d,
+                                                                  int num_pc_pts,
+                                                                  cudaPitchedPtr& patches_d,
+                                                                  cudaPitchedPtr& num_pts_in_patch_d,
                                                                   cudaStream_t& stream)
 {
   if (num_pc_pts > max_num_pts) {
     throw std::runtime_error("Number of points in the point cloud exceeds the maximum limit.");
   }
+
+  // TODO : definition of z_thresh might change. come back here later
+  float z_thresh = -sensor_height_ - 2.0; // threshold for z coordinate
 
   // Launch the kernel
   dim3 threads(NUM_THREADS);
@@ -102,7 +107,7 @@ bool ConcentricZoneModelGPU<PointT>::launch_create_patches_kernel(int num_pc_pts
 
   std::cout<< "Num points in OG cloud: " << num_pc_pts << std::endl;
 
-  create_patches_kernel<<<blocks, threads, 0, stream>>>(cloud_in_d_, patches_d,
+  create_patches_kernel<<<blocks, threads, 0, stream>>>(cloud_in_d, patches_d,
                                                         num_pts_in_patch_d, z_thresh,
                                                         num_pc_pts);
 
@@ -128,7 +133,6 @@ void ConcentricZoneModelGPU<PointT>::set_cnst_mem()
                                 sizeof(int) * num_sectors_per_ring_.size()));
 }
 
-//template class ConcentricZoneModelGPU<pcl::PointXYZ>;
 template class ConcentricZoneModelGPU<pcl::PointXYZI>;
 template class ConcentricZoneModelGPU<PointXYZILID>;
 

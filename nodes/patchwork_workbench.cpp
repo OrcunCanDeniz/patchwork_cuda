@@ -93,12 +93,12 @@ int main(int argc, char **argv) {
     loader.get_cloud(n, pc_curr);
     CloudPublisher.publish(cloud2msg(pc_curr, "map"));
 
-    PatchworkGroundSegGPU->zone_model_->reset_buffers();
+    PatchworkGroundSegGPU->reset_buffers();
     PatchworkGroundSegGPU->estimate_ground(&pc_curr);
 
 #ifdef VIZ_PATCHES
     patch_pc.reserve(pc_curr.size());
-    uint32_t np = PatchworkGroundSegGPU->get_patched_cloud(&patch_pc);
+    uint32_t np = PatchworkGroundSegGPU->cuda_patches_to_pcl(&patch_pc);
     ROS_INFO("Publishing %u points in patches", np);
     PatchedPublisher.publish(cloud2msg(patch_pc, "map"));
     patch_pc.clear();
