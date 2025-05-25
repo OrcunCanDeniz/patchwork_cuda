@@ -11,7 +11,7 @@
 
 
 #define MAX_POINTS 300000
-#define MAX_POINTS_PER_PATCH 4096
+#define MAX_POINTS_PER_PATCH 10000
 #define NUM_THREADS 512
 
 //define cuda error checker
