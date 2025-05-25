@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
   condParam<string>(&nh, "/algorithm", algorithm, "patchwork", "");
   condParam<string>(&nh, "/seq", seq, "00", "");
   condParam<string>(&nh, "/data_path", data_path,
-                    "/media/orcun/orcun2tb2/kitti/labeled_dataset/sequences/04", "");
+                    "/home/orcun/kitti/labeled_dataset/sequences/04", "");
 
   CloudPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/og_cloud", 100, true);
 
@@ -98,16 +98,17 @@ int main(int argc, char **argv) {
 
 #ifdef VIZ_PATCHES
     patch_pc.reserve(pc_curr.size());
-    uint32_t np = PatchworkGroundSegGPU->get_patched_cloud(&patch_pc);//this causes crash
+    uint32_t np = PatchworkGroundSegGPU->get_patched_cloud(&patch_pc);
+    ROS_INFO("Publishing %u points in patches", np);
     PatchedPublisher.publish(cloud2msg(patch_pc, "map"));
     patch_pc.clear();
 #endif
 
     std::cout<<"frame idx: "<<n<<std::endl;
 
-    while (std::cin.get() != ' ') {
-      // Wait for space bar input
-    }
+//    while (std::cin.get() != ' ') {
+//      // Wait for space bar input
+//    }
   }
   return 0;
 }

@@ -1,7 +1,7 @@
 <launch>
     <!-- Define an argument for data_path with a default value -->
     <!-- See the example. It should indicate the sequence directory -->
-    <arg name="data_path" default="/media/orcun/orcun2tb2/kitti/labeled_dataset/sequences/04" />
+    <arg name="data_path" default="/home/orcun/kitti/labeled_dataset/sequences/04" />
     <param name="/data_path" type="string" value="$(arg data_path)" />
     <node name="$(anon offline_kitti)" pkg="patchwork" type="patchwork_workbench" output="screen">
         <rosparam param="/algorithm">"patchwork"</rosparam>
