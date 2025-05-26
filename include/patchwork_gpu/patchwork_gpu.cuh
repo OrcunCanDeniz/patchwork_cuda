@@ -70,48 +70,10 @@ bool condParam(ros::NodeHandle *nh,
 #define COLOR_RED 1.0                          // red
 #define COLOR_GLOBALLY_TOO_HIGH_ELEVATION 0.8  // I'm not sure...haha
 
-int NOT_ASSIGNED = -2;
-int FEW_POINTS = -1;
-int UPRIGHT_ENOUGH = 0;      // cyan
-int FLAT_ENOUGH = 1;         // green
-int TOO_HIGH_ELEVATION = 2;  // blue
-int TOO_TILTED = 3;          // red
-int GLOBALLY_TOO_HIGH_ELEVATION = 4;
-
-template <typename PointT>
-struct Patch {
-  bool is_close_to_origin_ = false;  // If so, we can set threshold more conservatively
-  int ring_idx_ = NOT_ASSIGNED;
-  int sector_idx_ = NOT_ASSIGNED;
-
-  int status_ = NOT_ASSIGNED;
-
-//  PCAFeature feature_;
-
-  pcl::PointCloud<PointT> cloud_;
-  pcl::PointCloud<PointT> ground_;
-  pcl::PointCloud<PointT> non_ground_;
-
-  void clear() {
-    if (!cloud_.empty()) cloud_.clear();
-    if (!ground_.empty()) ground_.clear();
-    if (!non_ground_.empty()) non_ground_.clear();
-  }
-};
-
-std::vector<float> COLOR_MAP = {COLOR_CYAN,
-                                COLOR_GREEN,
-                                COLOR_BLUE,
-                                COLOR_RED,
-                                COLOR_GLOBALLY_TOO_HIGH_ELEVATION};
-
 template <typename PointT>
 class PatchWorkGPU {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-  typedef std::vector<Patch<PointT>> Ring;
-  typedef std::vector<Ring> RegionwisePatches;
 
   PatchWorkGPU() {}
 
@@ -241,42 +203,11 @@ class PatchWorkGPU {
   vector<double> elevation_thr_;
   vector<double> flatness_thr_;
 
-//  RegionwisePatches regionwise_patches_;
-
   jsk_recognition_msgs::PolygonArray poly_list_;
 
   ros::Publisher PlanePub, RevertedCloudPub, RejectedCloudPub;
   pcl::PointCloud<PointT> reverted_points_by_flatness_, rejected_points_by_elevation_;
 
-  void initialize(RegionwisePatches &patches)
-  {
-    patches.clear();
-    patch_indices_.clear();
-    Patch<PointT> patch;
-
-    // Reserve memory in advance to boost speed
-    patch.cloud_.reserve(1000);
-    patch.ground_.reserve(1000);
-    patch.non_ground_.reserve(1000);
-
-    // In polar coordinates, `num_columns` are `num_sectors`
-    // and `num_rows` are `num_rings`, respectively
-    int num_rows = zone_model_->num_total_rings_;
-    const auto &num_sectors_per_ring = zone_model_->num_sectors_per_ring_;
-
-    for (int j = 0; j < num_rows; j++) {
-      Ring ring;
-      patch.ring_idx_ = j;
-      patch.is_close_to_origin_ = j < zone_model_->max_ring_index_in_first_zone;
-      for (int i = 0; i < num_sectors_per_ring[j]; i++) {
-        patch.sector_idx_ = i;
-        ring.emplace_back(patch);
-
-        patch_indices_.emplace_back(j, i);
-      }
-      patches.emplace_back(ring);
-    }
-  }
 };
 
 
