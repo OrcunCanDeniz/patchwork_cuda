@@ -79,11 +79,14 @@ cuda_add_library(
         OPTIONS ${CUDA_NVCC_FLAGS}
 )
 
+cuda_add_library(patchwork_gpu lib/patchwork_kernels.cu)
+
 cuda_add_library(patchwork_host lib/patchwork_host.cpp)
 target_link_libraries(patchwork_host
         ${catkin_LIBRARIES}
         ${PCL_LIBRARIES}
         zone_models_gpu
+        patchwork_gpu
 )
 
 add_executable(patchwork_workbench nodes/patchwork_workbench.cpp)

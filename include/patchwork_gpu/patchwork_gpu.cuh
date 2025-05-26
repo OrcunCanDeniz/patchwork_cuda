@@ -109,8 +109,7 @@ class PatchWorkGPU {
   void init_cuda();
   void to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t stream=0);
   uint32_t cuda_patches_to_pcl( pcl::PointCloud<PointT>* pc);
-
-
+  void launch_seed_extract_kernel(cudaStream_t& stream);
 
   ~PatchWorkGPU()
   {
