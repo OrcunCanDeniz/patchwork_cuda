@@ -109,17 +109,29 @@ class PatchWorkGPU {
   void init_cuda();
   void to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t stream=0);
   uint32_t cuda_patches_to_pcl( pcl::PointCloud<PointT>* pc);
-  void launch_seed_extract_kernel(cudaStream_t& stream);
+  void extract_init_seeds_gpu(cudaStream_t& stream);
 
   ~PatchWorkGPU()
   {
     // Safely reset GPU device only if CUDA context is valid
-    cudaFree(patches_d);  // only free device memory
-    cudaFree(num_pts_in_patch_d);
-    cudaFree(patch_offsets_d);
-
     if (cloud_in_d_) {
       cudaFree(cloud_in_d_);
+    }
+
+    if (patches_d) {
+      cudaFree(patches_d);  // only free device memory
+    }
+
+    if (metas_d){
+      cudaFree(metas_d);
+    }
+
+    if (num_pts_in_patch_d){
+      cudaFree(num_pts_in_patch_d);
+    }
+
+    if (patch_offsets_d) {
+      cudaFree(patch_offsets_d);
     }
 
 #ifdef VIZ_PATCHES
@@ -157,6 +169,7 @@ class PatchWorkGPU {
 
   uint* patch_offsets_d{nullptr};  // For counting points in each patch
   uint* patch_offsets_h{nullptr};  // For counting points in each patch
+
 
   cudaPitchedPtr lbr_d; // LPR = low point representative
   std::size_t lbr_size;

@@ -73,11 +73,7 @@ __global__ void count_patches_kernel( PointT *points,
 
   int2 ring_sector_indices = get_ring_sector_idx(pt.x, pt.y);
 
-  uint lin_sector_idx{0};
-  for (int i=0; i<ring_sector_indices.x; ++i) {
-    lin_sector_idx += cnst_num_sectors_per_ring[i];
-  }
-  lin_sector_idx += ring_sector_indices.y;
+  const size_t lin_sector_idx = resolve_lin_sec_idx(ring_sector_indices.x, ring_sector_indices.y);
   uint* patch_numel_ptr = num_pts_in_patch + lin_sector_idx;
   int iip = -1; // intra-patch index
 

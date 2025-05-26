@@ -25,6 +25,28 @@ struct alignas(16) PointMeta {
     uint lin_sec_idx; // patch index
     int iip{-1}; // intra-patch index
 };
+
+__device__ size_t resolve_lin_sec_idx(int ring_idx, int sector_idx)
+{
+  // Calculate linear sector index based on ring and sector indices
+  uint lin_sector_idx{0};
+  for (int i=0; i<ring_idx; ++i) {
+    lin_sector_idx += cnst_num_sectors_per_ring[i];
+  }
+  return lin_sector_idx + sector_idx;
+}
+
+__device__ uint2 ring_sec_idx_from_lin_idx(uint lin_sec_idx)
+{
+  // Get ring and sector indices from linear sector index
+  uint ring_idx{0};
+  while(lin_sec_idx > cnst_num_sectors_per_ring[ring_idx]-1){
+    lin_sec_idx -= cnst_num_sectors_per_ring[ring_idx];
+    ring_idx++;
+  }
+  return make_uint2(ring_idx, lin_sec_idx);
+}
+
 __device__ __host__ inline PointMeta make_point_meta(int ring_idx, int sector_idx,
                                                      uint lin_sec_idx, int iip)
 {
