@@ -124,22 +124,29 @@ void PatchWorkGPU<PointT>::init_cuda()
 
 
   // allocate memory for patches (ring, sector, points)
-  cudaExtent extent_patches = make_cudaExtent(zone_model_->num_total_rings_*sizeof(float4),
-                                              zone_model_->max_num_sectors_, MAX_POINTS_PER_PATCH);
-  CUDA_CHECK(cudaMalloc3D(&patches_d, extent_patches));
-  patches_size = patches_d.pitch * patches_d.ysize * MAX_POINTS_PER_PATCH;
-
+  patches_size = max_pts_in_cld_ * sizeof(float4);
+  CUDA_CHECK(cudaMalloc((void**)&patches_d, patches_size));
 
   // num of pts in each patch and pathces_d has the same layout as following.
   //     r0 | r1 | r2 | r3
   // s1|
   // s2|
   // s3|
+  num_total_sectors_ = std::accumulate(zone_model_->num_sectors_per_ring_.begin(),
+                                        zone_model_->num_sectors_per_ring_.end(), 0);
 
-  cudaExtent extent_num_pts_in_patch = make_cudaExtent(zone_model_->num_total_rings_ * sizeof(uint),
-                                                       zone_model_->max_num_sectors_, 1);
-  CUDA_CHECK(cudaMalloc3D(&num_pts_in_patch_d, extent_num_pts_in_patch));
-  num_pts_in_patch_size = num_pts_in_patch_d.pitch * num_pts_in_patch_d.ysize;
+  num_pts_in_patch_size = num_total_sectors_ * sizeof(uint);
+  CUDA_CHECK(cudaMalloc((void**)&num_pts_in_patch_d, num_pts_in_patch_size));
+  CUDA_CHECK(cudaMalloc((void**)&patch_offsets_d, num_pts_in_patch_size));
+  CUDA_CHECK(cudaMallocHost((void**)&patch_offsets_h, num_pts_in_patch_size));
+
+  CUDA_CHECK(cudaMalloc((void**)&metas_d, sizeof(PointMeta) * max_pts_in_cld_));
+
+  cudaExtent extent_lbr = make_cudaExtent(zone_model_->num_total_rings_ * sizeof(float),
+                                           zone_model_->max_num_sectors_, 1);
+
+  CUDA_CHECK(cudaMalloc3D(&lbr_d, extent_lbr));
+  lbr_size = lbr_d.pitch * lbr_d.ysize;
 
 #ifdef VIZ_PATCHES
   CUDA_CHECK(cudaMallocHost((void**)&num_pts_in_patch_h, num_pts_in_patch_size));
@@ -152,8 +159,9 @@ void PatchWorkGPU<PointT>::init_cuda()
 template<typename PointT>
 void PatchWorkGPU<PointT>::reset_buffers(cudaStream_t stream)
 {
-  CUDA_CHECK(cudaMemsetAsync(patches_d.ptr, 0, patches_size, stream));
-  CUDA_CHECK(cudaMemsetAsync(num_pts_in_patch_d.ptr, 0, num_pts_in_patch_size, stream));
+  CUDA_CHECK(cudaMemsetAsync(patches_d, 0, patches_size, stream));
+  CUDA_CHECK(cudaMemsetAsync(num_pts_in_patch_d, 0, num_pts_in_patch_size, stream));
+  CUDA_CHECK(cudaMemsetAsync(patch_offsets_d, 0, num_pts_in_patch_size, stream));
   CUDA_CHECK(cudaMemsetAsync(cloud_in_d_, 0, sizeof(PointT) * MAX_POINTS, stream));
 }
 template<typename PointT>
@@ -171,9 +179,11 @@ template<typename PointT>
 uint32_t PatchWorkGPU<PointT>::cuda_patches_to_pcl( pcl::PointCloud<PointT>* pc)
 {
   cudaStream_t& stream = streamd2h_;
-  CUDA_CHECK(cudaMemcpyAsync(patches_h, patches_d.ptr, patches_size,
+  CUDA_CHECK(cudaMemcpyAsync(patches_h, patches_d, patches_size,
                              cudaMemcpyDeviceToHost, stream));
-  CUDA_CHECK(cudaMemcpyAsync(num_pts_in_patch_h, num_pts_in_patch_d.ptr, num_pts_in_patch_size,
+  CUDA_CHECK(cudaMemcpyAsync(num_pts_in_patch_h, num_pts_in_patch_d, num_pts_in_patch_size,
+                             cudaMemcpyDeviceToHost, stream));
+  CUDA_CHECK(cudaMemcpyAsync(patch_offsets_h, patch_offsets_d, num_pts_in_patch_size,
                              cudaMemcpyDeviceToHost, stream));
 
   cudaStreamSynchronize(stream);
@@ -181,12 +191,12 @@ uint32_t PatchWorkGPU<PointT>::cuda_patches_to_pcl( pcl::PointCloud<PointT>* pc)
   static auto& color_map = zone_model_->color_map;
   for(int ring_idx=0; ring_idx<zone_model_->num_total_rings_; ring_idx++)
   {
-    for(int sector_idx=0; sector_idx< zone_model_->max_num_sectors_; sector_idx++)
+    auto ring_offset = std::accumulate(zone_model_->num_sectors_per_ring_.begin(),
+                                        zone_model_->num_sectors_per_ring_.begin() + ring_idx , 0);
+    for(int sector_idx=0; sector_idx< zone_model_->num_sectors_per_ring_[ring_idx]; sector_idx++)
     {
-
-      auto* rowPtr = reinterpret_cast<uint*>( num_pts_in_patch_h +
-                                             sector_idx * num_pts_in_patch_d.pitch);
-      uint num_pts = rowPtr[ring_idx];
+      auto patch_numel_offset =  ring_offset + sector_idx;
+      uint num_pts = *(num_pts_in_patch_h + patch_numel_offset);
 
       if (num_pts >= MAX_POINTS_PER_PATCH)
       {
@@ -195,10 +205,8 @@ uint32_t PatchWorkGPU<PointT>::cuda_patches_to_pcl( pcl::PointCloud<PointT>* pc)
 
       for(std::size_t pt_idx=0; pt_idx<num_pts; pt_idx++)
       {
-        std::size_t row_offset = pt_idx * patches_d.ysize * patches_d.pitch +
-                                 sector_idx * patches_d.pitch;
-        auto* row = reinterpret_cast<float4*>(patches_h + row_offset);
-        float4& pt = row[ring_idx];
+        std::size_t lin_patch_offset = static_cast<std::size_t>(patch_offsets_h[patch_numel_offset]) + pt_idx;
+        float4& pt = patches_h[lin_patch_offset];
         PointT pt_loc;
         pt_loc.x = pt.x;
         pt_loc.y = pt.y;
@@ -221,8 +229,10 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in)
   //TODO sensor height estimation is not implemented yet
   reset_buffers();
   to_CUDA(cloud_in, streamh2d_);
-  bool ret = zone_model_->launch_create_patches_kernel(cloud_in_d_, cloud_in->points.size(),
-                                                       patches_d, num_pts_in_patch_d, streamh2d_);
+  bool ret = zone_model_->create_patches_gpu(cloud_in_d_, cloud_in->points.size(),
+                                             num_pts_in_patch_d,  metas_d,
+                                             patch_offsets_d, num_total_sectors_,
+                                             patches_d, streamh2d_);
   if(!ret)
   {
     throw std::runtime_error("Failed to launch create patches kernel.");

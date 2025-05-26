@@ -153,8 +153,9 @@ class PatchWorkGPU {
   ~PatchWorkGPU()
   {
     // Safely reset GPU device only if CUDA context is valid
-    cudaFree(patches_d.ptr);  // only free device memory
-    cudaFree(num_pts_in_patch_d.ptr);
+    cudaFree(patches_d);  // only free device memory
+    cudaFree(num_pts_in_patch_d);
+    cudaFree(patch_offsets_d);
 
     if (cloud_in_d_) {
       cudaFree(cloud_in_d_);
@@ -183,14 +184,22 @@ class PatchWorkGPU {
   long int max_pts_in_cld_{300000};
   PointT *cloud_in_d_{nullptr};
 
-  cudaPitchedPtr patches_d;
-  char* patches_h{nullptr};
+  float4* patches_d;
+  float4* patches_h{nullptr};
   std::size_t patches_size{0};
 
-  cudaPitchedPtr num_pts_in_patch_d;
-  char* num_pts_in_patch_h{nullptr};
+  PointMeta* metas_d{nullptr};
+
+  uint* num_pts_in_patch_d;
+  uint* num_pts_in_patch_h{nullptr};
   std::size_t num_pts_in_patch_size{0};
 
+  uint* patch_offsets_d{nullptr};  // For counting points in each patch
+  uint* patch_offsets_h{nullptr};  // For counting points in each patch
+
+  cudaPitchedPtr lbr_d; // LPR = low point representative
+  std::size_t lbr_size;
+  uint num_total_sectors_{0};
 
   // For ATAT (All-Terrain Automatic heighT estimator)
   bool ATAT_ON_;

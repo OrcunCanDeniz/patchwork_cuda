@@ -24,6 +24,8 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
    std::size_t max_num_sectors_{0};
    std::size_t max_num_pts{0};
    std::vector<uint32_t> color_map;
+   void  *cub_dev_scan_sum_tmp_ = nullptr;
+   size_t cub_dev_scan_sum_tmp_bytes = 0;
 
   ConcentricZoneModelGPU(const std::string &sensor_model,
                         const double sensor_height,
@@ -70,11 +72,19 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
 
   ConcentricZoneModelGPU() = default;
 
-  ~ConcentricZoneModelGPU() = default;
+  ~ConcentricZoneModelGPU()
+  {
+    cudaFree(cub_dev_scan_sum_tmp_);
+  }
 
   void set_cnst_mem();
 
-  bool launch_create_patches_kernel(PointT* cloud_in_d, int num_pc_pts, cudaPitchedPtr& patches_d,
-                                    cudaPitchedPtr& num_pts_in_patch_d, cudaStream_t& stream);
+  bool create_patches_gpu(PointT* cloud_in_d, int num_pc_pts,
+                          uint* num_pts_in_patch_d,
+                          PointMeta* metas_d,
+                          uint* offsets_d,
+                          uint num_total_sectors,
+                          float4* patches_d,
+                          cudaStream_t& stream);
 };
 
