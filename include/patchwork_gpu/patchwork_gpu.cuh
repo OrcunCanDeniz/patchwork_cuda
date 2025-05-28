@@ -108,9 +108,10 @@ class PatchWorkGPU {
   void estimate_ground(pcl::PointCloud<PointT>* cloud_in);
   void init_cuda();
   void to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t stream=0);
+  void extract_init_seeds_gpu(cudaStream_t& stream);
+  void fit_regionwise_planes_gpu(cudaStream_t& stream);
   void viz_points( pcl::PointCloud<PointT>* patched_pc,
                          pcl::PointCloud<PointT>* seed_pc );
-  void extract_init_seeds_gpu(cudaStream_t& stream);
 
   ~PatchWorkGPU()
   {

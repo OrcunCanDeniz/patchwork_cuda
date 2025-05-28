@@ -161,6 +161,7 @@ void PatchWorkGPU<PointT>::reset_buffers(cudaStream_t stream)
   CUDA_CHECK(cudaMemsetAsync(num_pts_in_patch_d, 0, num_pts_in_patch_size, stream));
   CUDA_CHECK(cudaMemsetAsync(patch_offsets_d, 0, num_pts_in_patch_size, stream));
   CUDA_CHECK(cudaMemsetAsync(cloud_in_d_, 0, sizeof(PointT) * MAX_POINTS, stream));
+  CUDA_CHECK(cudaMemsetAsync(metas_d, 0, sizeof(PointMeta) * max_pts_in_cld_, stream));
 }
 template<typename PointT>
 void PatchWorkGPU<PointT>::to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t stream)
