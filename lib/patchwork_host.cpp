@@ -21,7 +21,7 @@ PatchWorkGPU<PointT>::PatchWorkGPU(ros::NodeHandle *nh)
   condParam(nh, "num_iter", num_iter_, 3);
   condParam(nh, "num_lpr", num_lpr_, 20);
   condParam(nh, "num_min_pts", num_min_pts_, 10);
-  condParam(nh, "th_seeds", th_seeds_, 0.4);
+  condParam(nh, "th_seeds", th_seeds_, 0.4f);
   condParam(nh, "th_dist", th_dist_, 0.3);
   condParam(nh, "max_r", max_range_, 80.0);
   condParam(nh, "min_r", min_range_,
@@ -228,18 +228,18 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in)
 {
   //TODO sensor height estimation is not implemented yet
   reset_buffers();
-  to_CUDA(cloud_in, streamh2d_);
+  to_CUDA(cloud_in, stream_);
   bool ret = zone_model_->create_patches_gpu(cloud_in_d_, cloud_in->points.size(),
                                              num_pts_in_patch_d,  metas_d,
                                              patch_offsets_d, num_total_sectors_,
-                                             patches_d, streamh2d_);
+                                             patches_d, stream_);
   if(!ret)
   {
     throw std::runtime_error("Failed to launch create patches kernel.");
   }
-  //TODO sort ascending order, patch points by z. does this to search faster, may not be necessary
-  //TODO PER PATCH
-  //TODO extract initial seed points
+
+  extract_init_seeds_gpu(stream_);
+  cudaStreamSynchronize(stream_);
   // for num_iters_: fit plane, compute pt2plane distances, if distance < thresh, add to ground
   // fit plane = SVD on Covariance matrix of patch
 }

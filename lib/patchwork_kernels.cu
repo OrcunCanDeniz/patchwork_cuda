@@ -3,83 +3,70 @@
 //
 
 #include "patchwork_gpu/patchwork_gpu.cuh"
-#define NUM_PATCHES_PER_BLOCK 4
-#define NUM_PTS_PER_THREAD 32
+#define NUM_THREADS_PER_PATCH 128
 
 __device__ __constant__ int cnst_num_sectors_per_ring[256];
 __device__ __constant__ std::size_t cnst_num_sectors_per_ring_size;
+__device__ __constant__ float cnst_lbr_margin;
 
-
-
-__global__ void per_patch_lbr_compute(const float4* patches, const PointMeta bin_meta,
-                                      const uint* patch_offsets,
-                                      const float z_thresh, const int num_pts_in_patch,
-                                      const bool close_zone, const cudaPitchedPtr lbr)
+// Single kernel version: one block per patch with parallel reduction in shared memory
+__global__ void lbr_seed_kernel(
+    const float4* patches,
+    const uint* num_pts,
+    const uint* offsets,
+    const double close_zone_z_thresh,
+    const int max_ring_first,
+    const uint min_pts_thres,
+    PointMeta* metas)
 {
-  __shared__ float z_mean;
-  __shared__ uint valid_pts_in_patch;
-  const uint thread_in_patch = threadIdx.x;
-  const float4* patch_start = patches + patch_offsets[bin_meta.lin_sec_idx];
+  const int patch_idx = blockIdx.x;
+  const uint n = num_pts[patch_idx];
 
-  for(uint pt_idx=thread_in_patch ; pt_idx < num_pts_in_patch; pt_idx += NUM_PTS_PER_THREAD)
-  {
-    // get the point in patch from ring_sector_ids
-    float4 pt = patch_start[pt_idx];
-    if (close_zone) // TODO shouldnt cause warp divergence but recheck and ensure
-    {
-      if (pt.z > z_thresh) {
-        atomicAdd(&z_mean, pt.z);
-        atomicAdd(&valid_pts_in_patch, 1);
-      }
-    } else {
-      atomicAdd(&z_mean, pt.z);
-      atomicAdd(&valid_pts_in_patch, 1);
+  if (n == 0) return;
+  const bool all_ground = n < min_pts_thres;
+
+  const size_t offset = offsets[patch_idx];
+  const bool close_zone = (patch_idx < max_ring_first);
+
+  extern __shared__ float shared_mem[];
+  // split shared mem to 2 chunks
+  float* sum_buf = shared_mem;
+  uint* cnt_buf = (unsigned int*)&sum_buf[blockDim.x];
+
+  const int tid = threadIdx.x;
+  float local_sum = 0.0f;
+  uint local_cnt = 0;
+
+  for(uint i = tid; i < n; i += blockDim.x){
+    float z = patches[offset + i].z;
+    if(!close_zone || z > close_zone_z_thresh){
+      local_sum += z;
+      local_cnt += 1;
     }
   }
-  __syncthreads(); // sync all threads in patch
-  if (thread_in_patch == 0) {
-      // compute the mean height of the patch
-      const bool empty_patch = (valid_pts_in_patch == 0);
-      const float tmp_norm = empty_patch > 0 ? static_cast<float>(valid_pts_in_patch) : 1.0f; // avoid division by zero
-      z_mean = z_mean / tmp_norm;
 
-      auto lbr_row = reinterpret_cast<float*>( static_cast<char*>(lbr.ptr) +
-                                                 lbr.pitch * bin_meta.sector_idx );
-      lbr_row[bin_meta.ring_idx] = empty_patch ? 0.0f : z_mean;
+  sum_buf[tid] = local_sum;
+  cnt_buf[tid] = local_cnt;
+  __syncthreads();
+
+  // block(in patch) reduction to get sum and count
+  for(int s = blockDim.x / 2; s > 0; s >>= 1){
+    if(tid < s){ // half of the threads is active in each step
+      sum_buf[tid] += sum_buf[tid + s];
+      cnt_buf[tid] += cnt_buf[tid + s];
+    }
+    __syncthreads();
   }
-}
 
-__global__ void lbr_per_patch_parent_kernel(const float4* patches_ptr,
-                                          const uint* num_pts_in_patch_ptr,
-                                          const uint* patch_offsets,
-                                          const float z_thres,
-                                          const int max_ring_idx_in_first_zone,
-                                          const uint min_pts_thres,
-                                         cudaPitchedPtr lbr_d)
-{
-//  const int* num_sectors_per_ring, set as consant
-// TODO; launch 1D grid and resolve ring and sector indices in kernel from threadIdx.x
-  const uint2 ring_sector_ids = ring_sec_idx_from_lin_idx(threadIdx.x);
-  const int& ring_idx = ring_sector_ids.x;
-  const int& sector_idx = ring_sector_ids.y;
+  const float threshold = (cnt_buf[0]!=0 ? (sum_buf[0] / cnt_buf[0]) : 0.0f) + cnst_lbr_margin;
+  __syncthreads();
 
-  // some sectors actually does not exist, they're just here to keep a 3d data structure
-  const bool dummy_sector = sector_idx >= cnst_num_sectors_per_ring[ring_idx];
-
-  const size_t lin_sec_idx = resolve_lin_sec_idx(ring_idx, sector_idx);
-
-  const uint num_pts_in_patch = num_pts_in_patch_ptr[lin_sec_idx];
-  const bool is_close = (ring_idx <= max_ring_idx_in_first_zone);
-  const bool few_points = (num_pts_in_patch < min_pts_thres);
-
-  if(few_points) return;
-  // TODO do not forget about few_points case
-  dim3 threads( divup(num_pts_in_patch, NUM_PTS_PER_THREAD) );
-  PointMeta bin_meta = make_point_meta(ring_idx, sector_idx, lin_sec_idx, -1);
-
-  per_patch_lbr_compute<<<threads, 1>>>(patches_ptr, bin_meta, patch_offsets,
-                                        z_thres, num_pts_in_patch, is_close, lbr_d);
-
+  for(unsigned int i = tid; i < n; i += blockDim.x){
+    // if all_ground is true, we consider all points as ground
+    const size_t glob_pt_idx = offset + i;
+    metas[glob_pt_idx].ground = all_ground || (patches[glob_pt_idx].z < threshold);
+    metas[glob_pt_idx].lbr = threshold; // to be able to visualize the LPR vs chosen points
+  }
 }
 
 template <typename PointT>
@@ -88,14 +75,28 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu(cudaStream_t& stream)
   static double lowest_h_margin_in_close_zone =
       (sensor_height_ == 0.0) ? -0.1 : adaptive_seed_selection_margin_ * sensor_height_;
 
+  static bool _set_cnst{false};
+
+  if (!_set_cnst) {
+    cudaMemcpyToSymbol(cnst_lbr_margin, &th_seeds_, sizeof(float), 0, cudaMemcpyHostToDevice);
+    _set_cnst = true;
+  }
+
   // for patches in first zone, we only consider the points that are above the sensor height
   // for patches in other zones, all points are used to calculate mean height in patch
   // variable num of threads per patch may be useful.
-  dim3 threads(num_total_sectors_);
-  lbr_per_patch_parent_kernel<<<1, threads, 0, stream>>>(
-      patches_d, num_pts_in_patch_d, lowest_h_margin_in_close_zone,
-      zone_model_->max_ring_idx_in_first_zone_, num_min_pts_);
-
-//  TODO: choose points that are above the lbr as seeds of their patch
-
+  dim3 blocks(num_total_sectors_);
+  size_t sm_size = NUM_THREADS_PER_PATCH * (sizeof(float) + sizeof(unsigned int));
+  lbr_seed_kernel<<<blocks, NUM_THREADS_PER_PATCH, sm_size, stream>>>(
+                                                                      patches_d,
+                                                                      num_pts_in_patch_d,
+                                                                      patch_offsets_d,
+                                                                      lowest_h_margin_in_close_zone,
+                                                                      zone_model_->max_ring_index_in_first_zone,
+                                                                      num_min_pts_,
+                                                                      metas_d
+                                                                    );
 }
+
+template class PatchWorkGPU<pcl::PointXYZI>;
+template class PatchWorkGPU<PointXYZILID>;

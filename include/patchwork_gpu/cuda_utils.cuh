@@ -19,11 +19,13 @@ extern __device__ __constant__ float cnst_sqr_max_range;
 extern __device__ __constant__ int cnst_num_sectors_per_ring[256];
 extern __device__ __constant__ std::size_t cnst_num_sectors_per_ring_size;
 
-struct alignas(16) PointMeta {
+struct PointMeta {
     int ring_idx;  // ring index
     int sector_idx; // sector index
     uint lin_sec_idx; // patch index
     int iip{-1}; // intra-patch index
+    float lbr{0.0f}; // low point representative (LPR) for the patch
+    bool ground{false}; // whether this point is a seed point
 };
 
 __device__ size_t resolve_lin_sec_idx(int ring_idx, int sector_idx)

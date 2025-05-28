@@ -170,9 +170,6 @@ class PatchWorkGPU {
   uint* patch_offsets_d{nullptr};  // For counting points in each patch
   uint* patch_offsets_h{nullptr};  // For counting points in each patch
 
-
-  cudaPitchedPtr lbr_d; // LPR = low point representative
-  std::size_t lbr_size;
   uint num_total_sectors_{0};
 
   // For ATAT (All-Terrain Automatic heighT estimator)
@@ -189,7 +186,7 @@ class PatchWorkGPU {
   int num_rings_of_interest_;
 
   double sensor_height_;
-  double th_seeds_;
+  float th_seeds_;
   double th_dist_;
   double max_range_;
   double min_range_;
