@@ -2,11 +2,11 @@ cmake_minimum_required(VERSION 3.0.2)
 project(patchwork)
 
 
-option(VIZ_PATCHES "VIZ_PATCHES" OFF)
+option(VIZ "VIZ" OFF)
 
-if (VIZ_PATCHES)
-        add_compile_definitions(VIZ_PATCHES)
-endif (VIZ_PATCHES)
+if (VIZ)
+        add_compile_definitions(VIZ)
+endif (VIZ)
 
 add_compile_options(-std=c++17)
 set(CMAKE_BUILD_TYPE "Debug")

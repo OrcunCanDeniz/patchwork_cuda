@@ -108,7 +108,8 @@ class PatchWorkGPU {
   void estimate_ground(pcl::PointCloud<PointT>* cloud_in);
   void init_cuda();
   void to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t stream=0);
-  uint32_t cuda_patches_to_pcl( pcl::PointCloud<PointT>* pc);
+  void viz_points( pcl::PointCloud<PointT>* patched_pc,
+                         pcl::PointCloud<PointT>* seed_pc );
   void extract_init_seeds_gpu(cudaStream_t& stream);
 
   ~PatchWorkGPU()
@@ -134,7 +135,7 @@ class PatchWorkGPU {
       cudaFree(patch_offsets_d);
     }
 
-#ifdef VIZ_PATCHES
+#ifdef VIZ
     if (patches_h) {
       cudaFreeHost(patches_h);
       patches_h = nullptr;
@@ -144,7 +145,12 @@ class PatchWorkGPU {
       cudaFreeHost(num_pts_in_patch_h);
         num_pts_in_patch_h = nullptr;
     }
-#endif // VIZ_PATCHES
+
+    if (metas_h) {
+      cudaFreeHost(metas_h);
+      metas_h = nullptr;
+    }
+#endif // VIZ
   }
 
   std::unique_ptr<ConcentricZoneModelGPU<PointT>> zone_model_;
@@ -162,6 +168,8 @@ class PatchWorkGPU {
   std::size_t patches_size{0};
 
   PointMeta* metas_d{nullptr};
+  PointMeta* metas_h{nullptr};
+
 
   uint* num_pts_in_patch_d;
   uint* num_pts_in_patch_h{nullptr};

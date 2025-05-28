@@ -46,7 +46,7 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
       // Initialize the GPU constants
       set_cnst_mem();
 
-#ifdef VIZ_PATCHES
+#ifdef VIZ
         constexpr uint8_t PALETTE[3][3] = {
             {255,   0,   0},  // red
             {  0, 255,   0},  // green
@@ -66,7 +66,7 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
           }
         }
 
-#endif // VIZ_PATCHES
+#endif // VIZ
 
   }
 

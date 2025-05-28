@@ -65,13 +65,7 @@ int main(int argc, char **argv) {
 
   CloudPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/og_cloud", 100, true);
 
-#ifdef VIZ_PATCHES
-  ROS_WARN("Visualizing patches is enabled. This may cause performance issues.");
-  ros::Publisher PatchedPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/patches", 100, true);
-#endif
-
-
-  signal(SIGINT, signal_callback_handler);
+    signal(SIGINT, signal_callback_handler);
 
   float sensor_height_, max_range_, min_range_;
   std::string sensor_model_;
@@ -82,13 +76,20 @@ int main(int argc, char **argv) {
 
   PatchworkGroundSegGPU.reset(new PatchWorkGPU<PointType>(&nh));
 
+#ifdef VIZ
+  ROS_WARN("Visualizing patches is enabled. This may cause performance issues.");
+  ros::Publisher PatchedPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/patches", 100, true);
+  ros::Publisher SeedPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/seeds", 100, true);
+  pcl::PointCloud<PointType> patch_pc;
+  pcl::PointCloud<PointType> seed_pc;
+#endif
+
   cout << "Target data: " << data_path << endl;
   KittiLoader loader(data_path);
 
   int N = loader.size();
   for (int n = max(0, start_frame); n < min(N, end_frame); ++n) {
     pcl::PointCloud<PointType> pc_curr;
-    pcl::PointCloud<PointType> patch_pc;
 
     loader.get_cloud(n, pc_curr);
     CloudPublisher.publish(cloud2msg(pc_curr, "map"));
@@ -96,19 +97,21 @@ int main(int argc, char **argv) {
     PatchworkGroundSegGPU->reset_buffers();
     PatchworkGroundSegGPU->estimate_ground(&pc_curr);
 
-#ifdef VIZ_PATCHES
+#ifdef VIZ
     patch_pc.reserve(pc_curr.size());
-    uint32_t np = PatchworkGroundSegGPU->cuda_patches_to_pcl(&patch_pc);
-    ROS_INFO("Publishing %u points in patches", np);
+    seed_pc.reserve(pc_curr.size());
+    PatchworkGroundSegGPU->viz_points(&patch_pc, &seed_pc);
     PatchedPublisher.publish(cloud2msg(patch_pc, "map"));
+    SeedPublisher.publish(cloud2msg(seed_pc, "map"));
+    seed_pc.clear();
     patch_pc.clear();
 #endif
 
     std::cout<<"frame idx: "<<n<<std::endl;
 
-//    while (std::cin.get() != ' ') {
-//      // Wait for space bar input
-//    }
+    while (std::cin.get() != ' ') {
+      // Wait for space bar input
+    }
   }
   return 0;
 }
