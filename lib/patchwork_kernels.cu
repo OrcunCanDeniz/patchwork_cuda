@@ -39,10 +39,9 @@ __global__ void lbr_seed_kernel(
 
   for(uint i = tid; i < n; i += blockDim.x){
     float z = patches[offset + i].z;
-    if(!close_zone || z > close_zone_z_thresh){
-      local_sum += z;
-      local_cnt += 1;
-    }
+    bool flag = !close_zone || (z > close_zone_z_thresh);
+    local_sum += z * flag;
+    local_cnt += 1 * flag;
   }
 
   sum_buf[tid] = local_sum;
