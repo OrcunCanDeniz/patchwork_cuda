@@ -116,22 +116,14 @@ void PatchWorkGPU<PointT>::init_cuda()
 
   CUDA_CHECK(cudaMalloc((void**)&cloud_in_d_, sizeof(PointT) * max_pts_in_cld_));
 
-  cudaStreamCreate(&stream_);
-  cudaStreamCreate(&streamd2h_);
-  cudaStreamCreate(&streamh2d_);
+  cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking);
+  cudaStreamCreateWithFlags(&streamd2h_, cudaStreamNonBlocking);
+  cudaStreamCreateWithFlags(&streamh2d_, cudaStreamNonBlocking);
 
-  // create 3d cuda memory for compacted patches as (ring, sector, points)
-
-
-  // allocate memory for patches (ring, sector, points)
+  // allocate memory for patches
   patches_size = max_pts_in_cld_ * sizeof(float4);
   CUDA_CHECK(cudaMalloc((void**)&patches_d, patches_size));
 
-  // num of pts in each patch and pathces_d has the same layout as following.
-  //     r0 | r1 | r2 | r3
-  // s1|
-  // s2|
-  // s3|
   num_total_sectors_ = std::accumulate(zone_model_->num_sectors_per_ring_.begin(),
                                         zone_model_->num_sectors_per_ring_.end(), 0);
 
@@ -142,8 +134,12 @@ void PatchWorkGPU<PointT>::init_cuda()
 
   CUDA_CHECK(cudaMalloc((void**)&metas_d, sizeof(PointMeta) * max_pts_in_cld_));
 
-  cudaExtent extent_lbr = make_cudaExtent(zone_model_->num_total_rings_ * sizeof(float),
-                                           zone_model_->max_num_sectors_, 1);
+  CUDA_CHECK(cudaMalloc((void**)&cov_mats_d, sizeof(double)* 3 * 3 * num_total_sectors_));
+  CUDA_CHECK(cudaMalloc((void**)&pca_features_d, num_total_sectors_ * sizeof(PCAFeature)));
+
+  // cusolver buffers
+  CUDA_CHECK(cudaMalloc((void**)&W_solver, num_total_sectors_ * 3 * sizeof(double)));
+  CUDA_CHECK(cudaMalloc((void**)&eig_info_d, num_total_sectors_ * sizeof(int)));
 
 #ifdef VIZ
   CUDA_CHECK(cudaMallocHost((void**)&num_pts_in_patch_h, num_pts_in_patch_size));
@@ -151,8 +147,20 @@ void PatchWorkGPU<PointT>::init_cuda()
   CUDA_CHECK(cudaMallocHost((void**)&metas_h, sizeof(PointMeta) * max_pts_in_cld_));
 #endif // VIZ
 
+  setup_cusolver();
+  set_cnst_mem();
   reset_buffers();
 }
+template<typename PointT>
+void PatchWorkGPU<PointT>::setup_cusolver()
+{
+  CUSOLVER_CHECK(cusolverDnCreate(&cusolverH));
+  CUSOLVER_CHECK(cusolverDnSetStream(cusolverH, stream_));
+  CUSOLVER_CHECK(cusolverDnCreateSyevjInfo(&syevj_params));
+  CUSOLVER_CHECK(cusolverDnXsyevjSetTolerance(syevj_params, 1.e-7));
+  CUSOLVER_CHECK(cusolverDnXsyevjSetMaxSweeps(syevj_params, 100));
+}
+
 
 template<typename PointT>
 void PatchWorkGPU<PointT>::reset_buffers(cudaStream_t stream)
@@ -238,7 +246,9 @@ void PatchWorkGPU<PointT>::viz_points( pcl::PointCloud<PointT>* patched_pc,
 template<typename PointT>
 void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in)
 {
-  //TODO sensor height estimation is not implemented yet
+  // TODO: sensor height estimation is not implemented yet
+  // TODO: enforce stream for extract_init_seeds_gpu and to_CUDA
+
   reset_buffers();
   to_CUDA(cloud_in, stream_);
   bool ret = zone_model_->create_patches_gpu(cloud_in_d_, cloud_in->points.size(),
@@ -252,7 +262,7 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in)
 
   extract_init_seeds_gpu(stream_);
   cudaStreamSynchronize(stream_);
-  // for num_iters_: fit plane, compute pt2plane distances, if distance < thresh, add to ground
+  fit_regionwise_planes_gpu(); //uses stream_, as it is binded to cuSolver
   // fit plane = SVD on Covariance matrix of patch
 }
 

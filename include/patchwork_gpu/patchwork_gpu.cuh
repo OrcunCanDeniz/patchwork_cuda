@@ -24,6 +24,18 @@
 #include "ros/ros.h"
 #include "cuda_utils.cuh"
 
+#include <cusolverDn.h>
+
+// cusolver API error checking
+#define CUSOLVER_CHECK(err)                                                                        \
+    do {                                                                                           \
+        cusolverStatus_t err_ = (err);                                                             \
+        if (err_ != CUSOLVER_STATUS_SUCCESS) {                                                     \
+            printf("cusolver error %d at %s:%d\n", err_, __FILE__, __LINE__);                      \
+            throw std::runtime_error("cusolver error");                                            \
+        }                                                                                          \
+    } while (0)
+
 // vector cout operator
 template <typename T>
 std::ostream &operator<<(std::ostream &os, const std::vector<T> &vec) {
@@ -70,6 +82,17 @@ bool condParam(ros::NodeHandle *nh,
 #define COLOR_RED 1.0                          // red
 #define COLOR_GLOBALLY_TOO_HIGH_ELEVATION 0.8  // I'm not sure...haha
 
+struct PCAFeature {
+  float3 principal_;
+  float3 normal_;
+  float3 singular_values_;
+  float3 mean_;
+  float d_;
+  float th_dist_d_;
+  float linearity_;
+  float planarity_;
+};
+
 template <typename PointT>
 class PatchWorkGPU {
  public:
@@ -107,9 +130,11 @@ class PatchWorkGPU {
   void reset_buffers(cudaStream_t stream=nullptr);
   void estimate_ground(pcl::PointCloud<PointT>* cloud_in);
   void init_cuda();
+  void setup_cusolver();
   void to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t stream=0);
   void extract_init_seeds_gpu(cudaStream_t& stream);
-  void fit_regionwise_planes_gpu(cudaStream_t& stream);
+  void set_cnst_mem();
+  void fit_regionwise_planes_gpu();
   void viz_points( pcl::PointCloud<PointT>* patched_pc,
                          pcl::PointCloud<PointT>* seed_pc );
 
@@ -135,6 +160,9 @@ class PatchWorkGPU {
     if (patch_offsets_d) {
       cudaFree(patch_offsets_d);
     }
+
+    CUSOLVER_CHECK(cusolverDnDestroySyevjInfo(syevj_params));
+    CUSOLVER_CHECK(cusolverDnDestroy(cusolverH));
 
 #ifdef VIZ
     if (patches_h) {
@@ -171,13 +199,20 @@ class PatchWorkGPU {
   PointMeta* metas_d{nullptr};
   PointMeta* metas_h{nullptr};
 
-
   uint* num_pts_in_patch_d;
   uint* num_pts_in_patch_h{nullptr};
   std::size_t num_pts_in_patch_size{0};
 
   uint* patch_offsets_d{nullptr};  // For counting points in each patch
   uint* patch_offsets_h{nullptr};  // For counting points in each patch
+
+  PCAFeature* pca_features_d{nullptr};
+  double* cov_mats_d{nullptr};
+  cusolverDnHandle_t cusolverH = NULL;
+  syevjInfo_t syevj_params = NULL;
+  double* W_solver{nullptr};
+  double* work_d{nullptr};
+  int* eig_info_d{nullptr};
 
   uint num_total_sectors_{0};
 
@@ -225,7 +260,6 @@ class PatchWorkGPU {
 
   ros::Publisher PlanePub, RevertedCloudPub, RejectedCloudPub;
   pcl::PointCloud<PointT> reverted_points_by_flatness_, rejected_points_by_elevation_;
-
 };
 
 

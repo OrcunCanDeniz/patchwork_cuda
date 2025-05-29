@@ -3,11 +3,33 @@
 //
 
 #include "patchwork_gpu/patchwork_gpu.cuh"
+
 #define NUM_THREADS_PER_PATCH 128
 
 __device__ __constant__ int cnst_num_sectors_per_ring[256];
 __device__ __constant__ std::size_t cnst_num_sectors_per_ring_size;
 __device__ __constant__ float cnst_lbr_margin;
+
+__device__ __constant__ double cnst_uprightness_thr;
+__device__ __constant__ int cnst_num_rings_of_interest;
+__device__ __constant__ double cnst_elevation_thr[64];
+__device__ __constant__ double cnst_sensor_height;
+__device__ __constant__ double cnst_flatness_thr[64];
+__device__ __constant__ bool cnst_using_global_thr;
+__device__ __constant__ double cnst_global_elevation_thr;
+
+template <typename PointT>
+void PatchWorkGPU<PointT>::set_cnst_mem()
+{
+  cudaMemcpyToSymbol(cnst_lbr_margin, &th_seeds_, sizeof(float));
+  cudaMemcpyToSymbol(cnst_uprightness_thr, &uprightness_thr_, sizeof(double));
+  cudaMemcpyToSymbol(cnst_num_rings_of_interest, &num_rings_of_interest_, sizeof(int));
+  cudaMemcpyToSymbol(cnst_elevation_thr, elevation_thr_.data(), sizeof(double) * elevation_thr_.size());
+  cudaMemcpyToSymbol(cnst_sensor_height, &sensor_height_, sizeof(double));
+  cudaMemcpyToSymbol(cnst_flatness_thr, flatness_thr_.data(), sizeof(double) * flatness_thr_.size());
+  cudaMemcpyToSymbol(cnst_using_global_thr, &using_global_thr_, sizeof(bool));
+  cudaMemcpyToSymbol(cnst_global_elevation_thr, &global_elevation_thr_, sizeof(double));
+}
 
 // Single kernel version: one block per patch with parallel reduction in shared memory
 __global__ void lbr_seed_kernel(
@@ -74,13 +96,6 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu(cudaStream_t& stream)
   static double lowest_h_margin_in_close_zone =
       (sensor_height_ == 0.0) ? -0.1 : adaptive_seed_selection_margin_ * sensor_height_;
 
-  static bool _set_cnst{false};
-
-  if (!_set_cnst) {
-    cudaMemcpyToSymbol(cnst_lbr_margin, &th_seeds_, sizeof(float), 0, cudaMemcpyHostToDevice);
-    _set_cnst = true;
-  }
-
   // for patches in first zone, we only consider the points that are above the sensor height
   // for patches in other zones, all points are used to calculate mean height in patch
   // variable num of threads per patch may be useful.
@@ -96,6 +111,263 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu(cudaStream_t& stream)
                                                                       metas_d
                                                                     );
 }
+
+__global__ void compute_patchwise_cov_mat (const float4* patches,
+                                            const uint* num_pts,
+                                            const uint* offsets,
+                                            double* cov_out,
+                                            PointMeta* metas,
+                                            PCAFeature* pca_features
+                                          )
+{
+  static constexpr size_t feat_cnt= 10;
+  extern __shared__ double sm_stats[]; // xx, xy, xz, yy, yz, zz, x, y, z count
+  const uint patch_idx = blockIdx.x;
+  const uint tid = threadIdx.x;
+  const uint n = num_pts[patch_idx];
+  const float4* patch_start = &patches[offsets[patch_idx]];
+  const PointMeta* patch_metas = &metas[offsets[patch_idx]];
+  double cov_mat[9]; // COL-MAJOR
+
+#pragma unroll
+  for(size_t i=0; i<feat_cnt; ++i) {
+    sm_stats[tid * feat_cnt + i] = 0.0;
+  }
+
+  double* local_stats = &sm_stats[tid * feat_cnt];
+
+  for (size_t i=tid; i<n; i+=blockDim.x) {
+    const bool is_ground = patch_metas[i].ground;
+    const float4& pt = patch_start[i];
+
+    local_stats[0] += pt.x * pt.x * is_ground;
+    local_stats[1] += pt.x * pt.y * is_ground;
+    local_stats[2] += pt.x * pt.z * is_ground;
+    local_stats[3] += pt.y * pt.y * is_ground;
+    local_stats[4] += pt.y * pt.z * is_ground;
+    local_stats[5] += pt.z * pt.z * is_ground;
+    local_stats[6] += pt.x * is_ground;
+    local_stats[7] += pt.y * is_ground;
+    local_stats[8] += pt.z * is_ground;
+    local_stats[9] += is_ground;
+  }
+
+  __syncthreads();
+  for (size_t slice=blockDim.x/2; slice>0; slice>>=1) {
+    if (tid < slice) {
+      #pragma unroll
+      for(size_t stat_idx=0; stat_idx<feat_cnt; ++stat_idx) {
+        sm_stats[tid * feat_cnt + stat_idx] += sm_stats[(tid + slice) * feat_cnt + stat_idx];
+      }
+    }
+  }
+
+  if(tid == 0)
+  {
+    const double count = max(sm_stats[9], 1.0);// avoid division by zero
+    const double inv_count = 1.0/ (count);
+    const double inv_count_cov = 1.0 / (count - 1.0);
+    const double x_mean = sm_stats[6] * inv_count;
+    const double y_mean = sm_stats[7] * inv_count;
+    const double z_mean = sm_stats[8] * inv_count;
+
+    const double xx = (sm_stats[0] - count* x_mean * x_mean) * inv_count_cov;
+    const double xy = (sm_stats[1] - count* x_mean * y_mean) * inv_count_cov;
+    const double xz = (sm_stats[2] - count* x_mean * z_mean) * inv_count_cov;
+    const double yy = (sm_stats[3] - count* y_mean * y_mean) * inv_count_cov;
+    const double yz = (sm_stats[4] - count* y_mean * z_mean) * inv_count_cov;
+    const double zz = (sm_stats[5] - count* z_mean * z_mean) * inv_count_cov;
+
+    cov_mat[0] = xx;
+    cov_mat[1] = xy;
+    cov_mat[2] = xz;
+    cov_mat[3] = xy;
+    cov_mat[4] = yy;
+    cov_mat[5] = yz;
+    cov_mat[6] = xz;
+    cov_mat[7] = yz;
+    cov_mat[8] = zz;
+
+    #pragma unroll
+    for(int i = 0; i < 9; ++i) {
+      cov_out[patch_idx*9 + i] = cov_mat[i];
+    }
+    pca_features[patch_idx].mean_ = make_float3(x_mean, y_mean, z_mean);
+  }
+}
+
+__global__ void set_patch_pca_features(double* eig_vects,
+                                       double* eig_vals,
+                                       PCAFeature* pca_features,
+                                       const float th_dist)
+{
+  // about eig_info_d from cuSolver : TODO maybe comeback here to check if it is needed/useful
+  //An integer array of dimension batchSize. If CUSOLVER_STATUS_INVALID_VALUE is returned,
+  // info[0] = -i (less than zero) indicates i-th parameter is wrong (not counting handle).
+  // Otherwise, if info[i] = 0, the operation is successful.
+  // If info[i] = n+1, syevjBatched does not converge on i-th matrix under given tolerance and maximum sweeps.
+  const uint patch_idx = blockIdx.x;
+
+  PCAFeature pca_feature = pca_features[patch_idx];
+  // change the order of eigen values to match OG implementation, just to make it easier to reimplement
+  pca_feature.singular_values_ = make_float3(static_cast<float>(eig_vals[patch_idx * 3 + 2]),
+                                             static_cast<float>(eig_vals[patch_idx * 3 + 1]),
+                                             static_cast<float>(eig_vals[patch_idx * 3 ]));
+
+  auto inv_sing_val = 1/ pca_feature.singular_values_.x;
+  pca_feature.linearity_ =
+      (pca_feature.singular_values_.x - pca_feature.singular_values_.y) * inv_sing_val;
+  pca_feature.planarity_ =
+      (pca_feature.singular_values_.y - pca_feature.singular_values_.z) * inv_sing_val;
+
+  double* eig_vectors_patch = &eig_vects[patch_idx * 9];
+  // eig vectors still least value first order in their buffer
+  pca_feature.normal_ = make_float3( static_cast<float>(eig_vectors_patch[0]),
+                                      static_cast<float>(eig_vectors_patch[1]),
+/* z of normal vector must be pos */   fabs(static_cast<float>(eig_vectors_patch[2])));
+
+  pca_feature.d_ = - (pca_feature.normal_.x * pca_feature.mean_.x +
+                      pca_feature.normal_.y * pca_feature.mean_.y +
+                      pca_feature.normal_.z * pca_feature.mean_.z);
+
+  pca_feature.th_dist_d_ = th_dist - pca_feature.d_;
+
+  // store the PCA feature
+  pca_features[patch_idx] = pca_feature;
+}
+
+__global__ void filter_by_dist2plane(const float4* patches,
+                                      const uint* num_pts,
+                                      const uint* offsets,
+                                      const PCAFeature* pca_features,
+                                      PointMeta* metas)
+{
+  const uint patch_idx = blockIdx.x;
+  const uint n = num_pts[patch_idx];
+  const float4* patch_start = &patches[offsets[patch_idx]];
+  const PCAFeature& pca_feature = pca_features[patch_idx];
+
+  for (uint i=threadIdx.x; i<n; i+=blockDim.x) {
+      const float4& pt = patch_start[i];
+      // compute distance to plane
+      const float dist2plane = fabs(pca_feature.normal_.x * pt.x +
+                                    pca_feature.normal_.y * pt.y +
+                                    pca_feature.normal_.z * pt.z );
+      metas[offsets[patch_idx] + i].ground = dist2plane < pca_feature.th_dist_d_;
+  }
+}
+
+__device__ void compute_ground_likelihood_estimation_status(
+    const int ring_idx,
+    const double z_vec,
+    const double z_elevation,
+    const double surface_variable)
+{
+  const bool is_too_tilted = z_vec < cnst_uprightness_thr;
+  const bool close_ring_flag = (ring_idx < cnst_num_rings_of_interest);
+  const bool elev_thr_flag = (z_elevation > -cnst_sensor_height + cnst_elevation_thr[ring_idx]);
+  const bool flatness_flag = (cnst_flatness_thr[ring_idx] > surface_variable);
+  const bool glob_thr_flag = cnst_using_global_thr && (z_elevation > cnst_global_elevation_thr);
+
+  const bool is_flat_enough = !is_too_tilted && close_ring_flag && elev_thr_flag && flatness_flag;
+  const bool is_too_high_elev = !is_too_tilted && close_ring_flag && elev_thr_flag && !flatness_flag;
+  const bool is_upright_enough1 = !is_too_tilted && close_ring_flag && !elev_thr_flag;
+  const bool is_glob_too_high_elev = !is_too_tilted && !close_ring_flag && glob_thr_flag;
+  const bool is_upright_enough2 = !is_too_tilted && !close_ring_flag && !glob_thr_flag;
+
+  // TODO: encode is_*** variables, final output should be single value that'll be both created
+  // and used in nondivergent way
+
+  //is_too_tilted, too_high_elevation, patches assumes all points as nonground
+  //flat_enough, upright_enough, few_points no overwrite on decided points ground state
+}
+
+__global__ void compute_patch_feats(const float4* patches,
+                                     const uint* num_pts,
+                                     const uint* offsets,
+                                     PCAFeature* pca_features,
+                                     PointMeta* metas)
+{
+  // This kernel is not used in the current implementation, but can be used to compute additional patch features
+  // if needed in the future.
+  const uint patch_idx = blockIdx.x;
+  const uint n = num_pts[patch_idx];
+  const float4* patch_start = &patches[offsets[patch_idx]];
+  PCAFeature& pca_feat = pca_features[patch_idx];
+  const float min_singular_val = pca_feat.singular_values_.z;
+
+  const double ground_z_vec = abs(pca_feat.normal_.z);
+  const double ground_z_elevation = pca_feat.mean_.z;
+  const double surface_variable = min_singular_val /
+      (pca_feat.singular_values_.x + pca_feat.singular_values_.y + pca_feat.singular_values_.z);
+  auto ring_idx = ring_sec_idx_from_lin_idx(patch_idx).x;
+
+}
+
+
+template <typename PointT>
+void PatchWorkGPU<PointT>::fit_regionwise_planes_gpu()
+// stream selection enforced intentionally, cuSolver is binded with specific stream at somewhere else
+{
+  for(size_t i=0; i<num_iter_; ++i) {
+    // compute cov matrices for each patch
+    const size_t sm_size = NUM_THREADS_PER_PATCH * 10 * sizeof(double);
+    compute_patchwise_cov_mat<<<num_total_sectors_, NUM_THREADS_PER_PATCH, sm_size, stream_>>>(
+                                                                                      patches_d,
+                                                                                      num_pts_in_patch_d,
+                                                                                      patch_offsets_d,
+                                                                                      cov_mats_d,
+                                                                                      metas_d,
+                                                                                      pca_features_d
+                                                                                      );
+    // run SVD/PCA on each patch -> 3rd eigenvector is the normal
+    int lwork{0};
+    // cov mat is always positive-semidefinite, eigen vectors = singular vectors
+    // we can do eigen decomp instead of SVD
+    CUSOLVER_CHECK(cusolverDnDsyevjBatched_bufferSize(cusolverH,
+                                       CUSOLVER_EIG_MODE_VECTOR,
+                                       CUBLAS_FILL_MODE_LOWER,
+                                       3, cov_mats_d,
+                                       3, W_solver, &lwork,
+                                       syevj_params,
+                                       num_total_sectors_)
+                    );
+    //TODO: check if this can be done once
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&work_d), sizeof(double) * lwork));
+    // WARN contents of cov_mats are not guaranteed to be preserved after this call
+    CUSOLVER_CHECK(cusolverDnDsyevjBatched(cusolverH,
+                                           CUSOLVER_EIG_MODE_VECTOR,
+                                           CUBLAS_FILL_MODE_LOWER,
+                                           3, cov_mats_d,
+                                           3, W_solver,
+                                           work_d, lwork,
+                                           eig_info_d, syevj_params,
+                                           num_total_sectors_)
+                   );
+
+    // compute patchwise PCA features
+    set_patch_pca_features<<<num_total_sectors_, 1, 0, stream_>>>(
+                                                                  cov_mats_d,
+                                                                  W_solver,
+                                                                  pca_features_d,
+                                                                  th_dist_
+                                                                 );
+    // choose points by their dist to estimated plane
+    filter_by_dist2plane<<<num_total_sectors_, NUM_THREADS_PER_PATCH, 0, stream_>>>(
+                                                                                  patches_d,
+                                                                                  num_pts_in_patch_d,
+                                                                                  patch_offsets_d,
+                                                                                  pca_features_d,
+                                                                                  metas_d
+                                                                                  );
+
+    // compute patch features and ground likelihood
+
+
+    CUDA_CHECK(cudaFree(work_d));
+  }
+}
+
 
 template class PatchWorkGPU<pcl::PointXYZI>;
 template class PatchWorkGPU<PointXYZILID>;

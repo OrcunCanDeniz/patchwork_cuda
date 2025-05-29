@@ -84,6 +84,7 @@ cuda_add_library(patchwork_gpu lib/patchwork_kernels.cu)
 cuda_add_library(patchwork_host lib/patchwork_host.cpp)
 target_link_libraries(patchwork_host
         ${catkin_LIBRARIES}
+        ${CUDA_cusolver_LIBRARY}
         ${PCL_LIBRARIES}
         zone_models_gpu
         patchwork_gpu
