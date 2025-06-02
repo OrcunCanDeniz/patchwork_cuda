@@ -82,6 +82,16 @@ bool condParam(ros::NodeHandle *nh,
 #define COLOR_RED 1.0                          // red
 #define COLOR_GLOBALLY_TOO_HIGH_ELEVATION 0.8  // I'm not sure...haha
 
+enum PatchState : uint8_t
+{
+  FEW_PTS = 0,
+  TOO_TILTED = 1,
+  FLAT_ENOUGH = 2,
+  TOO_HIGH_ELEV = 3,
+  UPRIGHT_ENOUGH = 4,
+  GLOB_TOO_HIGH_ELEV = 5
+};
+
 struct PCAFeature {
   float3 principal_;
   float3 normal_;
@@ -137,6 +147,7 @@ class PatchWorkGPU {
   void extract_init_seeds_gpu();
   void set_cnst_mem();
   void fit_regionwise_planes_gpu();
+  void finalize_groundness_gpu();
   void to_pcl(pcl::PointCloud<PointT>* ground,
          pcl::PointCloud<PointT>* nonground);
 

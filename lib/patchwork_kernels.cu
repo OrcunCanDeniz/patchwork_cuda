@@ -358,112 +358,107 @@ __device__ PatchState compute_ground_likelihood_estimation_status(
     const int ring_idx,
     const double z_vec,
     const double z_elevation,
-    const double surface_variable)
+    const double surface_variable,
+    const int num_pts)
 {
-  const bool is_too_tilted = z_vec < cnst_uprightness_thr;
-  const bool close_ring_flag = (ring_idx < cnst_num_rings_of_interest);
-  const bool elev_thr_flag = (z_elevation > -cnst_sensor_height + cnst_elevation_thr[ring_idx]);
-  const bool flatness_flag = (cnst_flatness_thr[ring_idx] > surface_variable);
-  const bool glob_thr_flag = cnst_using_global_thr && (z_elevation > cnst_global_elevation_thr);
+  // TODO i know this is divergent as it can be. i'll retry without branching sometime
+  if (num_pts < cnst_min_num_pts_thr) return FEW_PTS;
 
-  const bool is_flat_enough = !is_too_tilted && close_ring_flag && elev_thr_flag && flatness_flag;
-  const bool is_too_high_elev = !is_too_tilted && close_ring_flag && elev_thr_flag && !flatness_flag;
-  const bool is_upright_enough1 = !is_too_tilted && close_ring_flag && !elev_thr_flag;
-  const bool is_glob_too_high_elev = !is_too_tilted && !close_ring_flag && glob_thr_flag;
-  const bool is_upright_enough2 = !is_too_tilted && !close_ring_flag && !glob_thr_flag;
-
-  // TODO: encode is_*** variables, final output should be single value that'll be both created
-  // and used in nondivergent way
-
+  if (z_vec < cnst_uprightness_thr) {
+    return TOO_TILTED;
+  } else {  // orthogonal
+    if (ring_idx < cnst_num_rings_of_interest) {
+      if (z_elevation > -cnst_sensor_height + cnst_elevation_thr[ring_idx]) {
+        if (cnst_flatness_thr[ring_idx] > surface_variable) {
+          return FLAT_ENOUGH;
+        } else {
+          return TOO_HIGH_ELEV;
+        }
+      } else {
+        return UPRIGHT_ENOUGH;
+      }
+    } else {
+      if (cnst_using_global_thr && (z_elevation > cnst_global_elevation_thr)) {
+        return GLOB_TOO_HIGH_ELEV;
+      } else {
+        return UPRIGHT_ENOUGH;
+      }
+    }
+  }
   //is_too_tilted, too_high_elevation, patches assumes all points as nonground
   //flat_enough, upright_enough, few_points no overwrite on decided points ground state
 }
 
-__global__ void compute_patch_feats(const float4* patches,
-                                     const uint* num_pts,
-                                     const uint* offsets,
+__global__ void compute_patch_states(const uint* num_pts_in_patch,
                                      PCAFeature* pca_features,
-                                     PointMeta* metas)
+                                     PatchState* patch_states)
 {
   // This kernel is not used in the current implementation, but can be used to compute additional patch features
   // if needed in the future.
   const uint patch_idx = blockIdx.x;
-  const uint n = num_pts[patch_idx];
-  const float4* patch_start = &patches[offsets[patch_idx]];
+  const uint n = num_pts_in_patch[patch_idx];
   PCAFeature& pca_feat = pca_features[patch_idx];
   const float min_singular_val = pca_feat.singular_values_.z;
 
   const double ground_z_vec = abs(pca_feat.normal_.z);
   const double ground_z_elevation = pca_feat.mean_.z;
   const double surface_variable = min_singular_val /
-      (pca_feat.singular_values_.x + pca_feat.singular_values_.y + pca_feat.singular_values_.z);
+                                  (pca_feat.singular_values_.x + pca_feat.singular_values_.y + pca_feat.singular_values_.z);
   auto ring_idx = ring_sec_idx_from_lin_idx(patch_idx).x;
 
+  PatchState state = compute_ground_likelihood_estimation_status(ring_idx,
+                                                                 ground_z_vec,
+                                                                 ground_z_elevation,
+                                                                 surface_variable,
+                                                                 n);
+  patch_states[patch_idx] = state;
 }
 
+__global__ void set_groundness(
+    const uint num_patched_pts,
+    PointMeta* metas,
+    PatchState* patch_states,
+    const uint* patch_offsets)
+{
+  const uint tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= num_patched_pts) return;
+  PointMeta meta = metas[tid];
+
+  const uint patch_offset = patch_offsets[meta.lin_sec_idx];
+
+  // all_ground override : few_points,
+  // all_NON_ground override : too_tilted, globally_too_high_elev, too_high_elev
+  // as_is : flat_enough, upright_enough
+  // no need to check if (state == FLAT_ENOUGH or state == UPRIGHT_ENOUGH)
+  // these states keeps the groundness as it is. below expression will hopefully handle all cases already.
+  //  const bool ground_decision = max(
+  //      min(meta.ground + all_ground_override - all_NONground_override, 0), 1
+  //  );
+
+  // TODO: manipulate meta.ground for decision
+
+}
 
 template <typename PointT>
-void PatchWorkGPU<PointT>::fit_regionwise_planes_gpu()
-// stream selection enforced intentionally, cuSolver is binded with specific stream at somewhere else
+void PatchWorkGPU<PointT>::finalize_groundness_gpu()
 {
-  for(size_t i=0; i<num_iter_; ++i) {
-    // compute cov matrices for each patch
-    const size_t sm_size = NUM_THREADS_PER_PATCH * 10 * sizeof(double);
-    compute_patchwise_cov_mat<<<num_total_sectors_, NUM_THREADS_PER_PATCH, sm_size, stream_>>>(
-                                                                                      patches_d,
-                                                                                      num_pts_in_patch_d,
-                                                                                      patch_offsets_d,
-                                                                                      cov_mats_d,
-                                                                                      metas_d,
-                                                                                      pca_features_d
-                                                                                      );
-    // run SVD/PCA on each patch -> 3rd eigenvector is the normal
-    int lwork{0};
-    // cov mat is always positive-semidefinite, eigen vectors = singular vectors
-    // we can do eigen decomp instead of SVD
-    CUSOLVER_CHECK(cusolverDnDsyevjBatched_bufferSize(cusolverH,
-                                       CUSOLVER_EIG_MODE_VECTOR,
-                                       CUBLAS_FILL_MODE_LOWER,
-                                       3, cov_mats_d,
-                                       3, W_solver, &lwork,
-                                       syevj_params,
-                                       num_total_sectors_)
-                    );
-    //TODO: check if this can be done once
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&work_d), sizeof(double) * lwork));
-    // WARN contents of cov_mats are not guaranteed to be preserved after this call
-    CUSOLVER_CHECK(cusolverDnDsyevjBatched(cusolverH,
-                                           CUSOLVER_EIG_MODE_VECTOR,
-                                           CUBLAS_FILL_MODE_LOWER,
-                                           3, cov_mats_d,
-                                           3, W_solver,
-                                           work_d, lwork,
-                                           eig_info_d, syevj_params,
-                                           num_total_sectors_)
-                   );
+  cudaDeviceSynchronize();
+  CUDA_CHECK(cudaGetLastError());
+// compute patch features and ground likelihood
+  compute_patch_states<<<num_total_sectors_, 1, 0, stream_>>>(num_pts_in_patch_d,
+                                                              pca_features_d,
+                                                              patch_states_d);
 
-    // compute patchwise PCA features
-    set_patch_pca_features<<<num_total_sectors_, 1, 0, stream_>>>(
-                                                                  cov_mats_d,
-                                                                  W_solver,
-                                                                  pca_features_d,
-                                                                  th_dist_
-                                                                 );
-    // choose points by their dist to estimated plane
-    filter_by_dist2plane<<<num_total_sectors_, NUM_THREADS_PER_PATCH, 0, stream_>>>(
-                                                                                  patches_d,
-                                                                                  num_pts_in_patch_d,
-                                                                                  patch_offsets_d,
-                                                                                  pca_features_d,
-                                                                                  metas_d
-                                                                                  );
-
-    // compute patch features and ground likelihood
-
-
-    CUDA_CHECK(cudaFree(work_d));
-  }
+  dim3 blocks(divup(*num_patched_pts_h, NUM_THREADS_PER_PATCH));
+  std::cout<< "Number of patched points: " << *num_patched_pts_h << std::endl;
+  set_groundness<<<blocks, NUM_THREADS_PER_PATCH, 0, stream_>>>( *num_patched_pts_h,
+                                                                  metas_d,
+                                                                  patch_states_d,
+                                                                  patch_offsets_d
+                                                                );
 }
+
+
 
 
 template class PatchWorkGPU<pcl::PointXYZI>;
