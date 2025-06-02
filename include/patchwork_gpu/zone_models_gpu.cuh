@@ -12,8 +12,8 @@
 #include <numeric>
 
 #include "patchwork/zone_models.hpp"
-#include "patchwork/point_type.hpp"
 #include "cuda_utils.cuh"
+#include "patchwork/point_type.hpp"
 #include "pcl/point_cloud.h"
 #include "pcl/point_types.h"
 
@@ -30,7 +30,7 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
    std::vector<uint> num_pts_per_patch_h;
    float* z_keys_d_ = nullptr;
    float* z_keys_out_d_ = nullptr;
-   float4* unsorted_patches_d_ = nullptr;
+   PointT* unsorted_patches_d_ = nullptr;
    void  *cub_sort_tmp_d = nullptr;
    size_t cub_sort_tmp_bytes = 0;
    PointMeta* metas_interm = nullptr;
@@ -58,7 +58,7 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
       set_cnst_mem();
       CUDA_CHECK(cudaMalloc((void**)&z_keys_d_, max_num_pts * sizeof(float)));
       CUDA_CHECK(cudaMalloc((void**)&z_keys_out_d_, max_num_pts * sizeof(float)));
-      CUDA_CHECK(cudaMalloc((void**)&unsorted_patches_d_, max_num_pts * sizeof(float4)));
+      CUDA_CHECK(cudaMalloc((void**)&unsorted_patches_d_, max_num_pts * sizeof(PointT)));
       CUDA_CHECK(cudaMalloc((void**)&metas_interm, max_num_pts * sizeof(PointMeta)));
 
 
@@ -104,7 +104,7 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
                           PointMeta* metas_d,
                           uint* offsets_d,
                           uint num_total_sectors,
-                          float4* patches_d,
+                          PointT* patches_d,
                           uint& num_patched_pts_h,
                           cudaStream_t& stream);
 };

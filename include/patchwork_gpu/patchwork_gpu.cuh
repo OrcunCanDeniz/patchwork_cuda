@@ -216,6 +216,8 @@ class PatchWorkGPU {
 
   float4* patches_d;
   float4* patches_h{nullptr};
+  PointT* patches_d;
+  PointT* patches_h{nullptr};
   std::size_t patches_size{0};
 
   PointMeta* in_metas_d{nullptr};
@@ -226,7 +228,7 @@ class PatchWorkGPU {
   uint* num_pts_in_patch_h{nullptr};
   std::size_t num_pts_in_patch_size{0};
   uint* num_patched_pts_h{nullptr};
-  float4* packed_pts_out_h{nullptr}; // first ground_pts_num elems is ground points
+  PointT* packed_pts_out_h{nullptr}; // first ground_pts_num elems is ground points
 
   PatchState* patch_states_d{nullptr};
 

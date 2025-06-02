@@ -121,7 +121,7 @@ void PatchWorkGPU<PointT>::init_cuda()
   cudaStreamCreate(&streamh2d_);
 
   // allocate memory for patches
-  patches_size = max_pts_in_cld_ * sizeof(float4);
+  patches_size = max_pts_in_cld_ * sizeof(PointT);
   CUDA_CHECK(cudaMalloc((void**)&patches_d, patches_size));
 
   num_total_sectors_ = std::accumulate(zone_model_->num_sectors_per_ring_.begin(),
@@ -200,7 +200,7 @@ template <typename PointT>
 void PatchWorkGPU<PointT>::to_pcl(pcl::PointCloud<PointT>* ground,
                                   pcl::PointCloud<PointT>* nonground)
 {
-  cudaMemcpyAsync(packed_pts_out_h, patches_d, sizeof(float4) * (*num_patched_pts_h),
+  cudaMemcpyAsync(packed_pts_out_h, patches_d, sizeof(PointT) * (*num_patched_pts_h),
                   cudaMemcpyDeviceToHost, streamd2h_);
   ground->reserve(*num_patched_pts_h);
   nonground->reserve(*num_patched_pts_h);
@@ -210,17 +210,12 @@ void PatchWorkGPU<PointT>::to_pcl(pcl::PointCloud<PointT>* ground,
   cudaStreamSynchronize(streamd2h_); // guarantee packed_pts_out_h loaded from device
   for (size_t i=0; i<(*num_patched_pts_h); i++)
   {
-    PointT pcl_pt;
-    const float4& pt = packed_pts_out_h[i];
-    pcl_pt.x = pt.x;
-    pcl_pt.y = pt.y;
-    pcl_pt.z = pt.z;
-    pcl_pt.intensity = pt.w; // assuming intensity is stored in w
+    const PointT& pt = packed_pts_out_h[i];
     if (metas_h[i].ground)
     {
-      ground->push_back(pcl_pt);
+      ground->push_back(pt);
     } else {
-      nonground->push_back(pcl_pt);
+      nonground->push_back(pt);
     }
   }
 }
@@ -283,11 +278,7 @@ void PatchWorkGPU<PointT>::viz_points( pcl::PointCloud<PointT>* patched_pc,
       for(std::size_t pt_idx=0; pt_idx<num_pts; pt_idx++)
       {
         std::size_t lin_patch_offset = static_cast<std::size_t>(patch_offsets_h[patch_numel_offset]) + pt_idx;
-        float4& pt = patches_h[lin_patch_offset];
-        PointT pt_loc;
-        pt_loc.x = pt.x;
-        pt_loc.y = pt.y;
-        pt_loc.z = pt.z;
+        PointT& pt_loc = patches_h[lin_patch_offset];
         pt_loc.intensity = color_map[ring_idx * zone_model_->max_num_sectors_ + sector_idx];
         patched_pc->points.push_back(pt_loc); // Add a duplicate point with zero intensity
 
@@ -313,6 +304,5 @@ void PatchWorkGPU<PointT>::viz_points( pcl::PointCloud<PointT>* patched_pc,
 }
 #endif
 
-template class PatchWorkGPU<pcl::PointXYZI>;
 template class PatchWorkGPU<PointXYZILID>;
 

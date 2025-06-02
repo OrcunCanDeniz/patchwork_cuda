@@ -1,9 +1,8 @@
 //
 // Created by orcun on 10.05.2025.
 //
-
-#include "patchwork_gpu/zone_models_gpu.cuh"
 #include <cub/cub.cuh>
+#include "patchwork_gpu/zone_models_gpu.cuh"
 
 // __device__ functions are inlined by default
 
@@ -62,7 +61,7 @@ template<typename PointT>
 __global__ void count_patches_kernel( PointT *points,
                                       uint* num_pts_in_patch,
                                       PointMeta* in_metas,
-                                     float z_thresh,
+                                      float z_thresh,
                                       int num_pts_in_cloud)
 {
   std::size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -94,7 +93,7 @@ __global__ void move_points_to_patch_kernel(PointT* points,
                                             PointMeta* metas_d,
                                             float* z_keys,
                                             const uint* offsets_d,
-                                            float4* patches_d, float z_thresh,
+                                            PointT* patches_d, float z_thresh,
                                             uint num_pc_points) {
   std::size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= num_pc_points) return;
@@ -104,8 +103,7 @@ __global__ void move_points_to_patch_kernel(PointT* points,
   PointMeta meta = in_metas_d[idx];
   if (meta.iip == -1) return;
   const auto pt_offset = offsets_d[meta.lin_sec_idx] + meta.iip;
-  float4 pt4 = make_float4(pt.x, pt.y, pt.z, pt.intensity);
-  patches_d[pt_offset] = pt4;
+  patches_d[pt_offset] = pt;
   metas_d[pt_offset] = meta;
   z_keys[pt_offset] = pt.z;
 }
@@ -117,7 +115,7 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
                                                           PointMeta* metas_d,
                                                           uint* offsets_d,
                                                           uint num_total_sectors,
-                                                          float4* patches_d,
+                                                          PointT* patches_d,
                                                           uint& num_patched_pts_h,
                                                           cudaStream_t& stream)
 {
@@ -239,6 +237,5 @@ void ConcentricZoneModelGPU<PointT>::set_cnst_mem()
   CUDA_CHECK(cudaMemcpyToSymbol(cnst_num_sectors_per_ring_size, &tmp2,sizeof(std::size_t)));
 }
 
-template class ConcentricZoneModelGPU<pcl::PointXYZI>;
 template class ConcentricZoneModelGPU<PointXYZILID>;
 

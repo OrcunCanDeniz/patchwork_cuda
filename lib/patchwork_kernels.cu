@@ -38,8 +38,9 @@ void PatchWorkGPU<PointT>::set_cnst_mem()
 }
 
 // Single kernel version: one block per patch with parallel reduction in shared memory
+template<typename PointT>
 __global__ void lbr_seed_kernel(
-    const float4* patches,
+    const PointT* patches,
     const uint* num_pts,
     const uint* offsets,
     const double close_zone_z_thresh,
@@ -71,7 +72,7 @@ __global__ void lbr_seed_kernel(
   for (int iter = 0; iter < loop_times; ++iter) {
     int i = iter * WARP_SIZE + tid;
     if (i < (int)n) {
-      float4 pt = patches[offset + i];
+      PointT pt = patches[offset + i];
       float z   = pt.z;
       if (! valid_flags_sm[tid]) {
         bool flag = (!close_zone) || (z > close_zone_z_thresh);
@@ -141,7 +142,8 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu()
                                                   );
 }
 
-__global__ void compute_patchwise_cov_mat (const float4* patches,
+template<typename PointT>
+__global__ void compute_patchwise_cov_mat (const PointT* patches,
                                             const uint* num_pts_per_patch,
                                             const uint* offsets,
                                             float* cov_out,
@@ -154,7 +156,7 @@ __global__ void compute_patchwise_cov_mat (const float4* patches,
   const uint patch_idx = blockIdx.x;
   const uint tid = threadIdx.x;
   const uint n = num_pts_per_patch[patch_idx];
-  const float4* patch_start = &patches[offsets[patch_idx]];
+  const PointT* patch_start = &patches[offsets[patch_idx]];
   const PointMeta* patch_metas = &metas[offsets[patch_idx]];
   float cov_mat[9]; // COL-MAJOR
 
@@ -169,7 +171,7 @@ __global__ void compute_patchwise_cov_mat (const float4* patches,
 
   for (size_t i=tid; i<n; i+=blockDim.x) {
     const bool is_ground = patch_metas[i].ground;
-    const float4& pt = patch_start[i];
+    const PointT& pt = patch_start[i];
 
     local_stats[0] += pt.x * pt.x * is_ground;
     local_stats[1] += pt.x * pt.y * is_ground;
@@ -264,8 +266,8 @@ __global__ void set_patch_pca_features(float* eig_vects,
   pca_feature.th_dist_d_ = th_dist - pca_feature.d_;
   pca_features[patch_idx] = pca_feature;
 }
-
-__global__ void filter_by_dist2plane(const float4* patches,
+template <typename PointT>
+__global__ void filter_by_dist2plane(const PointT* patches,
                                       const PCAFeature* pca_features,
                                       PointMeta* metas,
                                      const uint num_patched_pts)
@@ -278,7 +280,7 @@ __global__ void filter_by_dist2plane(const float4* patches,
   const PCAFeature& feat = pca_features[patch_idx];
 
   if (meta.iip < 0) return; // if point was previously filtered out, skip it
-  const float4& pt = patches[tid];
+  const PointT& pt = patches[tid];
 
   const float dist = feat.normal_.x * pt.x +
                       feat.normal_.y * pt.y +
@@ -461,5 +463,5 @@ void PatchWorkGPU<PointT>::finalize_groundness_gpu()
 
 
 
-template class PatchWorkGPU<pcl::PointXYZI>;
+//template class PatchWorkGPU<pcl::PointXYZI>;
 template class PatchWorkGPU<PointXYZILID>;
