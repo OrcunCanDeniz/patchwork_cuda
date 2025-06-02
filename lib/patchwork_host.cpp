@@ -195,6 +195,36 @@ void PatchWorkGPU<PointT>::to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t st
   CUDA_CHECK(cudaGetLastError());
 }
 
+
+template <typename PointT>
+void PatchWorkGPU<PointT>::to_pcl(pcl::PointCloud<PointT>* ground,
+                                  pcl::PointCloud<PointT>* nonground)
+{
+  cudaMemcpyAsync(packed_pts_out_h, patches_d, sizeof(float4) * (*num_patched_pts_h),
+                  cudaMemcpyDeviceToHost, streamd2h_);
+  ground->reserve(*num_patched_pts_h);
+  nonground->reserve(*num_patched_pts_h);
+  cudaMemcpyAsync(metas_h, metas_d, sizeof(PointMeta) * (*num_patched_pts_h),
+                  cudaMemcpyDeviceToHost, streamd2h_); // dont synch for this op yet.
+  // parse into ground pcl cloud
+  cudaStreamSynchronize(streamd2h_); // guarantee packed_pts_out_h loaded from device
+  for (size_t i=0; i<(*num_patched_pts_h); i++)
+  {
+    PointT pcl_pt;
+    const float4& pt = packed_pts_out_h[i];
+    pcl_pt.x = pt.x;
+    pcl_pt.y = pt.y;
+    pcl_pt.z = pt.z;
+    pcl_pt.intensity = pt.w; // assuming intensity is stored in w
+    if (metas_h[i].ground)
+    {
+      ground->push_back(pcl_pt);
+    } else {
+      nonground->push_back(pcl_pt);
+    }
+  }
+}
+
 template<typename PointT>
 void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
                                            pcl::PointCloud<PointT>* ground,
@@ -214,13 +244,15 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
 
   extract_init_seeds_gpu();
   fit_regionwise_planes_gpu();
+  cudaDeviceSynchronize();
+  to_pcl(ground,nonground);
 }
 
 
 # ifdef VIZ
 template<typename PointT>
 void PatchWorkGPU<PointT>::viz_points( pcl::PointCloud<PointT>* patched_pc,
-                                              pcl::PointCloud<PointT>* seed_pc)
+                                      pcl::PointCloud<PointT>* seed_pc)
 {
   CUDA_CHECK(cudaMemcpyAsync(metas_h, metas_d, sizeof(PointMeta) * max_pts_in_cld_,
                              cudaMemcpyDeviceToHost, streamd2h_));

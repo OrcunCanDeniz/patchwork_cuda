@@ -137,6 +137,9 @@ class PatchWorkGPU {
   void extract_init_seeds_gpu();
   void set_cnst_mem();
   void fit_regionwise_planes_gpu();
+  void to_pcl(pcl::PointCloud<PointT>* ground,
+         pcl::PointCloud<PointT>* nonground);
+
   void viz_points( pcl::PointCloud<PointT>* patched_pc,
                          pcl::PointCloud<PointT>* seed_pc );
 
