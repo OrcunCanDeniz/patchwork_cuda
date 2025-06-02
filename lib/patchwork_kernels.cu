@@ -287,7 +287,6 @@ __global__ void filter_by_dist2plane(const float4* patches,
   metas[tid].ground = dist < feat.th_dist_d_;
 }
 
-__device__ void compute_ground_likelihood_estimation_status(
 
 template <typename PointT>
 void PatchWorkGPU<PointT>::fit_regionwise_planes_gpu()
@@ -355,6 +354,7 @@ void PatchWorkGPU<PointT>::fit_regionwise_planes_gpu()
   }
 }
 
+__device__ PatchState compute_ground_likelihood_estimation_status(
     const int ring_idx,
     const double z_vec,
     const double z_elevation,

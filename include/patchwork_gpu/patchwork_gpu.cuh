@@ -151,9 +151,7 @@ class PatchWorkGPU {
 
     if (num_pts_in_patch_d) cudaFree(num_pts_in_patch_d);
 
-    if (num_pts_in_patch_d){
-      cudaFree(num_pts_in_patch_d);
-    }
+    if (patch_states_d)  cudaFree(patch_states_d);
 
     if (patch_offsets_h) cudaFreeHost(patch_offsets_h);
 
@@ -169,8 +167,7 @@ class PatchWorkGPU {
 
     if (num_patched_pts_h) cudaFreeHost(num_patched_pts_h);
 
-
-    if(work_d) cudaFree(work_d);
+    if (work_d) cudaFree(work_d);
 
     CUSOLVER_CHECK(cusolverDnDestroySyevjInfo(syevj_params));
     CUSOLVER_CHECK(cusolverDnDestroy(cusolverH));
@@ -215,8 +212,9 @@ class PatchWorkGPU {
   uint* num_pts_in_patch_h{nullptr};
   std::size_t num_pts_in_patch_size{0};
   uint* num_patched_pts_h{nullptr};
-  uint* ground_pts_num_d{nullptr}; // num of ground points in all cloud
-  uint* ground_pts_num_h{nullptr}; // num of ground points in all cloud
+  float4* packed_pts_out_h{nullptr}; // first ground_pts_num elems is ground points
+
+  PatchState* patch_states_d{nullptr};
 
   uint* patch_offsets_d{nullptr};  // For counting points in each patch
   uint* patch_offsets_h{nullptr};  // For counting points in each patch
