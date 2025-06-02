@@ -142,9 +142,9 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu()
 }
 
 __global__ void compute_patchwise_cov_mat (const float4* patches,
-                                            const uint* num_pts,
+                                            const uint* num_pts_per_patch,
                                             const uint* offsets,
-                                            double* cov_out,
+                                            float* cov_out,
                                             PointMeta* metas,
                                             PCAFeature* pca_features
                                           )
@@ -153,15 +153,17 @@ __global__ void compute_patchwise_cov_mat (const float4* patches,
   extern __shared__ double sm_stats[]; // xx, xy, xz, yy, yz, zz, x, y, z count
   const uint patch_idx = blockIdx.x;
   const uint tid = threadIdx.x;
-  const uint n = num_pts[patch_idx];
+  const uint n = num_pts_per_patch[patch_idx];
   const float4* patch_start = &patches[offsets[patch_idx]];
   const PointMeta* patch_metas = &metas[offsets[patch_idx]];
-  double cov_mat[9]; // COL-MAJOR
+  float cov_mat[9]; // COL-MAJOR
 
-#pragma unroll
+  #pragma unroll
   for(size_t i=0; i<feat_cnt; ++i) {
     sm_stats[tid * feat_cnt + i] = 0.0;
   }
+
+  __syncthreads();
 
   double* local_stats = &sm_stats[tid * feat_cnt];
 
@@ -181,21 +183,23 @@ __global__ void compute_patchwise_cov_mat (const float4* patches,
     local_stats[9] += is_ground;
   }
 
-  __syncthreads();
+  __syncthreads(); // local_stats is actuall a part of shared mem.
   for (size_t slice=blockDim.x/2; slice>0; slice>>=1) {
     if (tid < slice) {
-      #pragma unroll
       for(size_t stat_idx=0; stat_idx<feat_cnt; ++stat_idx) {
         sm_stats[tid * feat_cnt + stat_idx] += sm_stats[(tid + slice) * feat_cnt + stat_idx];
       }
     }
+    __syncthreads();
   }
 
   if(tid == 0)
   {
     const double count = max(sm_stats[9], 1.0);// avoid division by zero
-    const double inv_count = 1.0/ (count);
-    const double inv_count_cov = 1.0 / (count - 1.0);
+    const double denom_cov = (count > 1.0) ? (count - 1.0) : 1.0;
+    const double denom_mean = (count >= 1.0) ? (count) : 1.0;
+    const double inv_count_cov = 1.0 / denom_cov;
+    const double inv_count = 1.0 / denom_mean;
     const double x_mean = sm_stats[6] * inv_count;
     const double y_mean = sm_stats[7] * inv_count;
     const double z_mean = sm_stats[8] * inv_count;
@@ -207,15 +211,11 @@ __global__ void compute_patchwise_cov_mat (const float4* patches,
     const double yz = (sm_stats[4] - count* y_mean * z_mean) * inv_count_cov;
     const double zz = (sm_stats[5] - count* z_mean * z_mean) * inv_count_cov;
 
-    cov_mat[0] = xx;
-    cov_mat[1] = xy;
-    cov_mat[2] = xz;
-    cov_mat[3] = xy;
-    cov_mat[4] = yy;
-    cov_mat[5] = yz;
-    cov_mat[6] = xz;
-    cov_mat[7] = yz;
-    cov_mat[8] = zz;
+    cov_mat[0] = (float)xx; cov_mat[3] = (float)xy; cov_mat[6] = (float)xz;
+    cov_mat[1] = (float)xy; cov_mat[4] = (float)yy; cov_mat[7] = (float)yz;
+    cov_mat[2] = (float)xz; cov_mat[5] = (float)yz; cov_mat[8] = (float)zz;
+
+    // do not care about patches with insufficient points, we'll handle those later
 
     #pragma unroll
     for(int i = 0; i < 9; ++i) {
@@ -225,20 +225,16 @@ __global__ void compute_patchwise_cov_mat (const float4* patches,
   }
 }
 
-__global__ void set_patch_pca_features(double* eig_vects,
-                                       double* eig_vals,
+__global__ void set_patch_pca_features(float* eig_vects,
+                                       float* eig_vals,
                                        PCAFeature* pca_features,
                                        const float th_dist)
 {
-  // about eig_info_d from cuSolver : TODO maybe comeback here to check if it is needed/useful
-  //An integer array of dimension batchSize. If CUSOLVER_STATUS_INVALID_VALUE is returned,
-  // info[0] = -i (less than zero) indicates i-th parameter is wrong (not counting handle).
-  // Otherwise, if info[i] = 0, the operation is successful.
-  // If info[i] = n+1, syevjBatched does not converge on i-th matrix under given tolerance and maximum sweeps.
   const uint patch_idx = blockIdx.x;
-
   PCAFeature pca_feature = pca_features[patch_idx];
+
   // change the order of eigen values to match OG implementation, just to make it easier to reimplement
+  // cusolver sorts them in ascending order.
   pca_feature.singular_values_ = make_float3(static_cast<float>(eig_vals[patch_idx * 3 + 2]),
                                              static_cast<float>(eig_vals[patch_idx * 3 + 1]),
                                              static_cast<float>(eig_vals[patch_idx * 3 ]));
@@ -249,44 +245,116 @@ __global__ void set_patch_pca_features(double* eig_vects,
   pca_feature.planarity_ =
       (pca_feature.singular_values_.y - pca_feature.singular_values_.z) * inv_sing_val;
 
-  double* eig_vectors_patch = &eig_vects[patch_idx * 9];
-  // eig vectors still least value first order in their buffer
-  pca_feature.normal_ = make_float3( static_cast<float>(eig_vectors_patch[0]),
-                                      static_cast<float>(eig_vectors_patch[1]),
-/* z of normal vector must be pos */   fabs(static_cast<float>(eig_vectors_patch[2])));
+  // 1st vect is the one with least eig val. thus plane normal.
+  float* eig_vectors_patch = &eig_vects[patch_idx * 9];
+  // eig vectors are stored col-major
+  float vx = eig_vectors_patch[0];
+  float vy = eig_vectors_patch[1];
+  float vz = eig_vectors_patch[2];
 
-  pca_feature.d_ = - (pca_feature.normal_.x * pca_feature.mean_.x +
+  int inv_vect = (vz < 0.0f) ? -1 : 1;
+  pca_feature.normal_ = make_float3( vx * inv_vect,
+                                     vy * inv_vect,
+/* z of normal vector must be pos */ vz * inv_vect);
+
+  pca_feature.d_ = -(pca_feature.normal_.x * pca_feature.mean_.x +
                       pca_feature.normal_.y * pca_feature.mean_.y +
                       pca_feature.normal_.z * pca_feature.mean_.z);
 
   pca_feature.th_dist_d_ = th_dist - pca_feature.d_;
-
-  // store the PCA feature
   pca_features[patch_idx] = pca_feature;
 }
 
 __global__ void filter_by_dist2plane(const float4* patches,
-                                      const uint* num_pts,
-                                      const uint* offsets,
                                       const PCAFeature* pca_features,
-                                      PointMeta* metas)
+                                      PointMeta* metas,
+                                     const uint num_patched_pts)
 {
-  const uint patch_idx = blockIdx.x;
-  const uint n = num_pts[patch_idx];
-  const float4* patch_start = &patches[offsets[patch_idx]];
-  const PCAFeature& pca_feature = pca_features[patch_idx];
+  const uint tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid>= num_patched_pts) return;
 
-  for (uint i=threadIdx.x; i<n; i+=blockDim.x) {
-      const float4& pt = patch_start[i];
-      // compute distance to plane
-      const float dist2plane = fabs(pca_feature.normal_.x * pt.x +
-                                    pca_feature.normal_.y * pt.y +
-                                    pca_feature.normal_.z * pt.z );
-      metas[offsets[patch_idx] + i].ground = dist2plane < pca_feature.th_dist_d_;
-  }
+  const PointMeta meta = metas[tid];
+  const uint& patch_idx = meta.lin_sec_idx;
+  const PCAFeature& feat = pca_features[patch_idx];
+
+  if (meta.iip < 0) return; // if point was previously filtered out, skip it
+  const float4& pt = patches[tid];
+
+  const float dist = feat.normal_.x * pt.x +
+                      feat.normal_.y * pt.y +
+                      feat.normal_.z * pt.z ;
+
+  metas[tid].ground = dist < feat.th_dist_d_;
 }
 
 __device__ void compute_ground_likelihood_estimation_status(
+
+template <typename PointT>
+void PatchWorkGPU<PointT>::fit_regionwise_planes_gpu()
+// stream selection enforced intentionally, cuSolver is binded with specific stream at somewhere else
+{
+  static bool work_d_alloced{false};
+  static int lwork{0};
+
+  for(size_t i=0; i<num_iter_; ++i) {
+    // compute cov matrices for each patch
+    const size_t sm_size = NUM_THREADS_PER_PATCH * 10 * sizeof(double);
+    compute_patchwise_cov_mat<<<num_total_sectors_, NUM_THREADS_PER_PATCH, sm_size, stream_>>>(
+        patches_d, num_pts_in_patch_d, patch_offsets_d, cov_mats_d, metas_d, pca_features_d);
+
+    // run PCA on each patch -> eigenvector w/ least eig, val is the normal
+    // cov mat is always positive-semidefinite, so, eigen vectors = singular vectors
+    // we can do eigen decomp instead of SVD minor difference from OG implementation
+
+    if(!work_d_alloced)
+    {
+      // allocate workspace for cuSolver
+      cudaStreamSynchronize(stream_);
+      CUSOLVER_CHECK(cusolverDnSsyevjBatched_bufferSize(cusolverH,
+                                                        CUSOLVER_EIG_MODE_VECTOR,
+                                                        CUBLAS_FILL_MODE_UPPER,
+                                                        3,
+                                                        cov_mats_d,
+                                                        3,
+                                                        eigen_vals_d,
+                                                        &lwork,
+                                                        syevj_params,
+                                                        num_total_sectors_));
+
+      CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&work_d), sizeof(float) * lwork));
+      work_d_alloced = true;
+    }
+
+    CUSOLVER_CHECK(cusolverDnSsyevjBatched(cusolverH,
+                                           CUSOLVER_EIG_MODE_VECTOR,
+                                           CUBLAS_FILL_MODE_UPPER,
+                                           3,
+                                           cov_mats_d,
+                                           3,
+                                           eigen_vals_d,
+                                           work_d,
+                                           lwork,
+                                           eig_info_d,
+                                           syevj_params,
+                                           num_total_sectors_));
+    // covariance mats. in cov_mats_d are now eigen vectors
+
+    // compute patchwise PCA features
+    set_patch_pca_features<<<num_total_sectors_, 1, 0, stream_>>>(cov_mats_d, eigen_vals_d,
+                                                                  pca_features_d, th_dist_);
+    //    // choose points by their dist to estimated plane
+    dim3 blocks(divup(*num_patched_pts_h, NUM_THREADS_PER_PATCH));
+    filter_by_dist2plane<<<blocks, NUM_THREADS_PER_PATCH, 0, stream_>>>(
+        patches_d, pca_features_d, metas_d, *num_patched_pts_h);
+  }
+
+  auto err = cudaGetLastError();
+  if (err != cudaSuccess)
+  {
+    std::cerr << "CUDA error in fit_regionwise_planes_gpu: " << cudaGetErrorString(err) << std::endl;
+  }
+}
+
     const int ring_idx,
     const double z_vec,
     const double z_elevation,
