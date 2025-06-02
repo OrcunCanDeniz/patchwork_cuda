@@ -128,11 +128,13 @@ class PatchWorkGPU {
   explicit PatchWorkGPU(ros::NodeHandle *nh);
 
   void reset_buffers(cudaStream_t stream=nullptr);
-  void estimate_ground(pcl::PointCloud<PointT>* cloud_in);
+  void estimate_ground(pcl::PointCloud<PointT>* cloud_in,
+                       pcl::PointCloud<PointT>* ground,
+                       pcl::PointCloud<PointT>* nonground);
   void init_cuda();
   void setup_cusolver();
   void to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t stream=0);
-  void extract_init_seeds_gpu(cudaStream_t& stream);
+  void extract_init_seeds_gpu();
   void set_cnst_mem();
   void fit_regionwise_planes_gpu();
   void viz_points( pcl::PointCloud<PointT>* patched_pc,
@@ -141,17 +143,13 @@ class PatchWorkGPU {
   ~PatchWorkGPU()
   {
     // Safely reset GPU device only if CUDA context is valid
-    if (cloud_in_d_) {
-      cudaFree(cloud_in_d_);
-    }
+    if (cloud_in_d_) cudaFree(cloud_in_d_);
 
-    if (patches_d) {
-      cudaFree(patches_d);  // only free device memory
-    }
+    if (patches_d) cudaFree(patches_d);
 
-    if (metas_d){
-      cudaFree(metas_d);
-    }
+    if (metas_d) cudaFree(metas_d);
+
+    if (num_pts_in_patch_d) cudaFree(num_pts_in_patch_d);
 
     if (num_pts_in_patch_d){
       cudaFree(num_pts_in_patch_d);
@@ -160,6 +158,11 @@ class PatchWorkGPU {
     if (patch_offsets_d) {
       cudaFree(patch_offsets_d);
     }
+    if (patch_offsets_h) cudaFreeHost(patch_offsets_h);
+
+    if (patch_offsets_d) cudaFree(patch_offsets_d);
+    if (num_patched_pts_h) cudaFreeHost(num_patched_pts_h);
+
 
     CUSOLVER_CHECK(cusolverDnDestroySyevjInfo(syevj_params));
     CUSOLVER_CHECK(cusolverDnDestroy(cusolverH));
@@ -196,12 +199,15 @@ class PatchWorkGPU {
   float4* patches_h{nullptr};
   std::size_t patches_size{0};
 
+  PointMeta* in_metas_d{nullptr};
   PointMeta* metas_d{nullptr};
   PointMeta* metas_h{nullptr};
 
   uint* num_pts_in_patch_d;
   uint* num_pts_in_patch_h{nullptr};
   std::size_t num_pts_in_patch_size{0};
+  uint* num_patched_pts_h{nullptr};
+  uint* ground_pts_num_h{nullptr}; // num of ground points in all cloud
 
   uint* patch_offsets_d{nullptr};  // For counting points in each patch
   uint* patch_offsets_h{nullptr};  // For counting points in each patch

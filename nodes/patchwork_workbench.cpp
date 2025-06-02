@@ -19,6 +19,8 @@ using PointType = PointXYZILID;
 using namespace std;
 
 ros::Publisher CloudPublisher;
+ros::Publisher GroundPublisher;
+ros::Publisher NonGroundPublisher;
 
 boost::shared_ptr<PatchWorkGPU<PointType>> PatchworkGroundSegGPU;
 
@@ -64,6 +66,8 @@ int main(int argc, char **argv) {
                     "/home/orcun/kitti/labeled_dataset/sequences/04", "");
 
   CloudPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/og_cloud", 100, true);
+  GroundPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/ground_cloud", 100, true);
+  NonGroundPublisher = nh.advertise<sensor_msgs::PointCloud2>("/benchmark/nonground_cloud", 100, true);
 
     signal(SIGINT, signal_callback_handler);
 
@@ -90,12 +94,16 @@ int main(int argc, char **argv) {
   int N = loader.size();
   for (int n = max(0, start_frame); n < min(N, end_frame); ++n) {
     pcl::PointCloud<PointType> pc_curr;
+    pcl::PointCloud<PointType> pc_ground;
+    pcl::PointCloud<PointType> pc_nonground;
 
     loader.get_cloud(n, pc_curr);
     CloudPublisher.publish(cloud2msg(pc_curr, "map"));
 
     PatchworkGroundSegGPU->reset_buffers();
-    PatchworkGroundSegGPU->estimate_ground(&pc_curr);
+    PatchworkGroundSegGPU->estimate_ground(&pc_curr, &pc_ground, &pc_nonground);
+    GroundPublisher.publish(cloud2msg(pc_ground, "map"));
+    NonGroundPublisher.publish(cloud2msg(pc_nonground, "map"));
 
 #ifdef VIZ
     patch_pc.reserve(pc_curr.size());

@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <numeric>
 
 #include "patchwork/zone_models.hpp"
 #include "patchwork/point_type.hpp"
@@ -26,6 +27,14 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
    std::vector<uint32_t> color_map;
    void  *cub_dev_scan_sum_tmp_ = nullptr;
    size_t cub_dev_scan_sum_tmp_bytes = 0;
+   std::vector<uint> num_pts_per_patch_h;
+   float* z_keys_d_ = nullptr;
+   float* z_keys_out_d_ = nullptr;
+   float4* unsorted_patches_d_ = nullptr;
+   void  *cub_sort_tmp_d = nullptr;
+   size_t cub_sort_tmp_bytes = 0;
+   PointMeta* metas_interm = nullptr;
+   cudaStream_t czm_stream_;
 
   ConcentricZoneModelGPU(const std::string &sensor_model,
                         const double sensor_height,
@@ -43,8 +52,15 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
 
       max_num_sectors_ = *std::max_element(num_sectors_per_ring_.begin(),
                                            num_sectors_per_ring_.end());
+      num_pts_per_patch_h.resize(num_total_rings_ * max_num_sectors_, 0);
       // Initialize the GPU constants
+      cudaStreamCreateWithFlags(&czm_stream_, cudaStreamNonBlocking);
       set_cnst_mem();
+      CUDA_CHECK(cudaMalloc((void**)&z_keys_d_, max_num_pts * sizeof(float)));
+      CUDA_CHECK(cudaMalloc((void**)&z_keys_out_d_, max_num_pts * sizeof(float)));
+      CUDA_CHECK(cudaMalloc((void**)&unsorted_patches_d_, max_num_pts * sizeof(float4)));
+      CUDA_CHECK(cudaMalloc((void**)&metas_interm, max_num_pts * sizeof(PointMeta)));
+
 
 #ifdef VIZ
         constexpr uint8_t PALETTE[3][3] = {
@@ -75,16 +91,21 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
   ~ConcentricZoneModelGPU()
   {
     cudaFree(cub_dev_scan_sum_tmp_);
+    cudaFree(z_keys_d_);
+    cudaFree(z_keys_out_d_);
+    cudaFree(unsorted_patches_d_);
   }
 
   void set_cnst_mem();
 
   bool create_patches_gpu(PointT* cloud_in_d, int num_pc_pts,
                           uint* num_pts_in_patch_d,
+                          PointMeta* in_metas_d,
                           PointMeta* metas_d,
                           uint* offsets_d,
                           uint num_total_sectors,
                           float4* patches_d,
+                          uint& num_patched_pts_h,
                           cudaStream_t& stream);
 };
 

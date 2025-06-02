@@ -3,8 +3,12 @@
 //
 
 #include "patchwork_gpu/patchwork_gpu.cuh"
+#include "cub/device/device_reduce.cuh"
+#include "cub/device/device_partition.cuh"
 
 #define NUM_THREADS_PER_PATCH 128
+#define WARP_SIZE 32
+#define FULL_MASK 0xffffffffu
 
 __device__ __constant__ int cnst_num_sectors_per_ring[256];
 __device__ __constant__ std::size_t cnst_num_sectors_per_ring_size;
@@ -17,6 +21,7 @@ __device__ __constant__ double cnst_sensor_height;
 __device__ __constant__ double cnst_flatness_thr[64];
 __device__ __constant__ bool cnst_using_global_thr;
 __device__ __constant__ double cnst_global_elevation_thr;
+__device__ __constant__ int cnst_min_num_pts_thr;
 
 template <typename PointT>
 void PatchWorkGPU<PointT>::set_cnst_mem()
@@ -29,6 +34,7 @@ void PatchWorkGPU<PointT>::set_cnst_mem()
   cudaMemcpyToSymbol(cnst_flatness_thr, flatness_thr_.data(), sizeof(double) * flatness_thr_.size());
   cudaMemcpyToSymbol(cnst_using_global_thr, &using_global_thr_, sizeof(bool));
   cudaMemcpyToSymbol(cnst_global_elevation_thr, &global_elevation_thr_, sizeof(double));
+  cudaMemcpyToSymbol(cnst_min_num_pts_thr, &num_min_pts_, sizeof(int));
 }
 
 // Single kernel version: one block per patch with parallel reduction in shared memory
@@ -50,39 +56,62 @@ __global__ void lbr_seed_kernel(
   const size_t offset = offsets[patch_idx];
   const bool close_zone = (patch_idx < max_ring_first);
 
+  const int tid = threadIdx.x;
   extern __shared__ float shared_mem[];
   // split shared mem to 2 chunks
-  float* sum_buf = shared_mem;
-  uint* cnt_buf = (unsigned int*)&sum_buf[blockDim.x];
+  auto* thread_pt_z_sm = shared_mem; // first WARP_SIZE * sizeof(float)
+  auto* valid_flags_sm = reinterpret_cast<bool*>(&shared_mem[WARP_SIZE]); // following WARP_SIZE * sizeof(uint)
+  valid_flags_sm[tid] = false; // initialize valid flags to false
+  __syncthreads();  // make sure every thread sees the cleared flags
+  uint warp_cnt = 0;
 
-  const int tid = threadIdx.x;
-  float local_sum = 0.0f;
-  uint local_cnt = 0;
+  //points are already sorted by z in the patch, so first few points in patch must be enough for kernel
+  int loop_times = (int)((min_pts_thres + WARP_SIZE-1) / WARP_SIZE);
 
-  for(uint i = tid; i < n; i += blockDim.x){
-    float z = patches[offset + i].z;
-    bool flag = !close_zone || (z > close_zone_z_thresh);
-    local_sum += z * flag;
-    local_cnt += 1 * flag;
-  }
-
-  sum_buf[tid] = local_sum;
-  cnt_buf[tid] = local_cnt;
-  __syncthreads();
-
-  // block(in patch) reduction to get sum and count
-  for(int s = blockDim.x / 2; s > 0; s >>= 1){
-    if(tid < s){ // half of the threads is active in each step
-      sum_buf[tid] += sum_buf[tid + s];
-      cnt_buf[tid] += cnt_buf[tid + s];
+  for (int iter = 0; iter < loop_times; ++iter) {
+    int i = iter * WARP_SIZE + tid;
+    if (i < (int)n) {
+      float4 pt = patches[offset + i];
+      float z   = pt.z;
+      if (! valid_flags_sm[tid]) {
+        bool flag = (!close_zone) || (z > close_zone_z_thresh);
+        warp_cnt += (int)flag;      // accumulate 0 or 1 in this thread’s register
+        valid_flags_sm[tid] = flag;
+        thread_pt_z_sm[tid] = z;    // store z for this thread
+      }
     }
     __syncthreads();
+
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+      warp_cnt += __shfl_down_sync(0xffffffffu, warp_cnt, offset);
+    }
+
+    warp_cnt = __shfl_sync(FULL_MASK, warp_cnt, 0); // broadcast warp count to all threads in the warp
+
+    if (warp_cnt >= min_pts_thres) break;
+        // we have more points than needed, sample first min_pts_thres points
+      // else; consume rest of the patch, continue to next point or exit loop depending on loop_times
   }
 
-  const float threshold = (cnt_buf[0]!=0 ? (sum_buf[0] / cnt_buf[0]) : 0.0f) + cnst_lbr_margin;
+  const uint useful_pts_num = min(warp_cnt, min_pts_thres);
+
+  float thread_pt_z = 0.f;
+  if(tid<useful_pts_num)
+  {
+    thread_pt_z = thread_pt_z_sm[tid];
+  }
   __syncthreads();
 
-  for(unsigned int i = tid; i < n; i += blockDim.x){
+  for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+    thread_pt_z += __shfl_down_sync(0xffffffffu, thread_pt_z, offset);
+  }
+
+  //broadcast value of thread_pt_z at tid==0 to all threads in the warp
+  thread_pt_z = __shfl_sync(FULL_MASK, thread_pt_z, 0);
+
+  const float threshold = (useful_pts_num!=0 ? (thread_pt_z / useful_pts_num) : 0.0f) + cnst_lbr_margin;
+
+  for(unsigned int i = tid; i < n; i += WARP_SIZE){
     // if all_ground is true, we consider all points as ground
     const size_t glob_pt_idx = offset + i;
     metas[glob_pt_idx].ground = all_ground || (patches[glob_pt_idx].z < threshold);
@@ -91,7 +120,7 @@ __global__ void lbr_seed_kernel(
 }
 
 template <typename PointT>
-void PatchWorkGPU<PointT>::extract_init_seeds_gpu(cudaStream_t& stream)
+void PatchWorkGPU<PointT>::extract_init_seeds_gpu()
 {
   static double lowest_h_margin_in_close_zone =
       (sensor_height_ == 0.0) ? -0.1 : adaptive_seed_selection_margin_ * sensor_height_;
@@ -100,16 +129,16 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu(cudaStream_t& stream)
   // for patches in other zones, all points are used to calculate mean height in patch
   // variable num of threads per patch may be useful.
   dim3 blocks(num_total_sectors_);
-  size_t sm_size = NUM_THREADS_PER_PATCH * (sizeof(float) + sizeof(unsigned int));
-  lbr_seed_kernel<<<blocks, NUM_THREADS_PER_PATCH, sm_size, stream>>>(
-                                                                      patches_d,
-                                                                      num_pts_in_patch_d,
-                                                                      patch_offsets_d,
-                                                                      lowest_h_margin_in_close_zone,
-                                                                      zone_model_->max_ring_index_in_first_zone,
-                                                                      num_min_pts_,
-                                                                      metas_d
-                                                                    );
+  size_t sm_size = WARP_SIZE * (sizeof(float) + sizeof(bool));
+  lbr_seed_kernel<<<blocks, WARP_SIZE, sm_size, stream_>>>(
+                                                    patches_d,
+                                                    num_pts_in_patch_d,
+                                                    patch_offsets_d,
+                                                    lowest_h_margin_in_close_zone,
+                                                    zone_model_->max_ring_index_in_first_zone,
+                                                    num_min_pts_,
+                                                    metas_d
+                                                  );
 }
 
 __global__ void compute_patchwise_cov_mat (const float4* patches,

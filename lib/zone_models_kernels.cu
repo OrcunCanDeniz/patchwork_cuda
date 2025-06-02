@@ -61,7 +61,7 @@ __device__ int2 get_ring_sector_idx(const float &x, const float &y)
 template<typename PointT>
 __global__ void count_patches_kernel( PointT *points,
                                       uint* num_pts_in_patch,
-                                      PointMeta* metas,
+                                      PointMeta* in_metas,
                                      float z_thresh,
                                       int num_pts_in_cloud)
 {
@@ -82,7 +82,7 @@ __global__ void count_patches_kernel( PointT *points,
    iip = atomicAdd(patch_numel_ptr, 1); // save this as idx in patch
   }
 
-  metas[idx] = make_point_meta( ring_sector_indices.x,
+  in_metas[idx] = make_point_meta( ring_sector_indices.x,
                                ring_sector_indices.y,
                                lin_sector_idx,
                                iip);
@@ -90,7 +90,9 @@ __global__ void count_patches_kernel( PointT *points,
 
 template<typename PointT>
 __global__ void move_points_to_patch_kernel(PointT* points,
-                                            const PointMeta* metas_d,
+                                            const PointMeta* in_metas_d,
+                                            PointMeta* metas_d,
+                                            float* z_keys,
                                             const uint* offsets_d,
                                             float4* patches_d, float z_thresh,
                                             uint num_pc_points) {
@@ -99,19 +101,24 @@ __global__ void move_points_to_patch_kernel(PointT* points,
 
   const PointT &pt = points[idx];
   if (pt.z < z_thresh) return;
-  PointMeta meta = metas_d[idx];
+  PointMeta meta = in_metas_d[idx];
   if (meta.iip == -1) return;
+  const auto pt_offset = offsets_d[meta.lin_sec_idx] + meta.iip;
   float4 pt4 = make_float4(pt.x, pt.y, pt.z, pt.intensity);
-  patches_d[offsets_d[meta.lin_sec_idx] + meta.iip] = pt4;
+  patches_d[pt_offset] = pt4;
+  metas_d[pt_offset] = meta;
+  z_keys[pt_offset] = pt.z;
 }
 
 template<typename PointT>
 bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int num_pc_pts,
                                                           uint* num_pts_in_patch_d,
+                                                          PointMeta* in_metas_d,
                                                           PointMeta* metas_d,
                                                           uint* offsets_d,
                                                           uint num_total_sectors,
                                                           float4* patches_d,
+                                                          uint& num_patched_pts_h,
                                                           cudaStream_t& stream)
 {
   if (num_pc_pts > max_num_pts) {
@@ -125,22 +132,22 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
   dim3 threads(num_threads);
   dim3 blocks(divup(num_pc_pts, num_threads));
 
-  std::cout<< "Num points in OG cloud: " << num_pc_pts << std::endl;
-
   if (cub_dev_scan_sum_tmp_ != nullptr) {
     // this scratch memory must be replaced every time since num points is not consistent
     cudaFree(cub_dev_scan_sum_tmp_);
     cub_dev_scan_sum_tmp_ = nullptr;
   }
-
+  // compute the num of points in each patch
   count_patches_kernel<<<blocks, threads, 0, stream>>>(cloud_in_d,
                                                         num_pts_in_patch_d,
-                                                        metas_d,
+                                                        in_metas_d,
                                                         z_thresh,
                                                         num_pc_pts);
+  // TODO: stream synch may not be necessary here
   cudaStreamSynchronize(stream);
   CUDA_CHECK(cudaGetLastError());
 
+  // compute patch offsets
   // query the temporary storage size for the exclusive sum
   CUDA_CHECK( cub::DeviceScan::ExclusiveSum(
                       /* d_temp_storage */ nullptr,
@@ -157,7 +164,6 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
   // allocate temporary storage for exclusive sum
   CUDA_CHECK(cudaMalloc(&cub_dev_scan_sum_tmp_, cub_dev_scan_sum_tmp_bytes));
 
-  // 3) run the scan
   CUDA_CHECK( cub::DeviceScan::ExclusiveSum(
                   /* d_temp_storage */    cub_dev_scan_sum_tmp_,
                   /* temp_storage_bytes */ cub_dev_scan_sum_tmp_bytes,
@@ -166,15 +172,48 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
                   /* num_items */         num_total_sectors,
                   /* stream */            stream
               ));
-  cudaStreamSynchronize(stream);
+  cudaStreamSynchronize(stream); // end compute offsets
   CUDA_CHECK(cudaGetLastError());
+
+  cudaMemcpyAsync(num_pts_per_patch_h.data(), num_pts_in_patch_d,
+                  sizeof(uint) * num_total_sectors, cudaMemcpyDeviceToHost, czm_stream_);
 
   dim3 move_threads(num_threads);
   dim3 move_blocks(divup(num_pc_pts, num_threads));
-
-  move_points_to_patch_kernel<<<move_blocks, move_threads,0, stream>>>(cloud_in_d, metas_d,
-                                                                       offsets_d, patches_d,
+  // move points from input cloud to patches buffer
+  move_points_to_patch_kernel<<<move_blocks, move_threads,0, stream>>>(cloud_in_d,
+                                                                        in_metas_d,
+                                                                        metas_interm,
+                                                                        z_keys_d_,
+                                                                        offsets_d, unsorted_patches_d_,
                                                                         z_thresh, num_pc_pts);
+  cudaStreamSynchronize(czm_stream_);
+  num_patched_pts_h = std::accumulate(num_pts_per_patch_h.begin(), num_pts_per_patch_h.end(), 0u);
+
+  if (cub_sort_tmp_d == nullptr) {
+    // sort workspace size just depends on num_total_sectors,
+    //  thus the workspace can be reused through the lifetime of the program
+    cub::DeviceSegmentedSort::SortPairs(
+        cub_sort_tmp_d, cub_sort_tmp_bytes,
+        z_keys_d_, z_keys_out_d_, unsorted_patches_d_, patches_d,
+        num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1);
+
+    // Allocate temporary storage
+    cudaMalloc(&cub_sort_tmp_d, cub_sort_tmp_bytes);
+  }
+
+  // sort pts within patches by z
+  cub::DeviceSegmentedSort::SortPairs(
+      cub_sort_tmp_d, cub_sort_tmp_bytes,
+      z_keys_d_, z_keys_out_d_, unsorted_patches_d_, patches_d,
+      num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1);
+
+  // sorted only pts metas[idx] is not associated to pts[idx] anymore, sort metas too
+  // apply same sorting of pts to metas
+  cub::DeviceSegmentedSort::SortPairs(
+      cub_sort_tmp_d, cub_sort_tmp_bytes,
+      z_keys_d_, z_keys_out_d_, metas_interm, metas_d,
+      num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1);
 
   cudaStreamSynchronize(stream);
   CUDA_CHECK(cudaGetLastError());

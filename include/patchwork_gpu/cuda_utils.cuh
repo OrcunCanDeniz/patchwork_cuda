@@ -23,7 +23,7 @@ struct PointMeta {
     int ring_idx;  // ring index
     int sector_idx; // sector index
     uint lin_sec_idx; // patch index
-    int iip{-1}; // intra-patch index
+    int iip{-1}; // intra-patch index !!!: this changes after segmented sort, and set value is invalid
     float lbr{0.0f}; // low point representative (LPR) for the patch
     bool ground{false}; // whether this point is a seed point
 };
@@ -33,7 +33,7 @@ __device__ size_t resolve_lin_sec_idx(int ring_idx, int sector_idx)
   // Calculate linear sector index based on ring and sector indices
   uint lin_sector_idx{0};
   for (int i=0; i<ring_idx; ++i) {
-    lin_sector_idx += cnst_num_sectors_per_ring[i];
+    lin_sector_idx += cnst_num_sectors_per_ring[i-1];
   }
   return lin_sector_idx + sector_idx;
 }
