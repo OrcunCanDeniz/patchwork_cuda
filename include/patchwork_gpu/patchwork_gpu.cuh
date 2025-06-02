@@ -214,8 +214,6 @@ class PatchWorkGPU {
   long int max_pts_in_cld_{300000};
   PointT *cloud_in_d_{nullptr};
 
-  float4* patches_d;
-  float4* patches_h{nullptr};
   PointT* patches_d;
   PointT* patches_h{nullptr};
   std::size_t patches_size{0};
