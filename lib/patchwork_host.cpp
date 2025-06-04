@@ -127,7 +127,7 @@ void PatchWorkGPU<PointT>::init_cuda()
   num_total_sectors_ = std::accumulate(zone_model_->num_sectors_per_ring_.begin(),
                                         zone_model_->num_sectors_per_ring_.end(), 0);
 
-  num_pts_in_patch_size = num_total_sectors_ * sizeof(uint);
+  num_pts_in_patch_size = (num_total_sectors_+1) * sizeof(uint);
   CUDA_CHECK(cudaMalloc((void**)&num_pts_in_patch_d, num_pts_in_patch_size));
   CUDA_CHECK(cudaMalloc((void**)&patch_states_d, sizeof(PatchState)* num_total_sectors_));
   CUDA_CHECK(cudaMalloc((void**)&patch_offsets_d, num_pts_in_patch_size));
@@ -204,10 +204,10 @@ void PatchWorkGPU<PointT>::to_pcl(pcl::PointCloud<PointT>* ground,
                   cudaMemcpyDeviceToHost, streamd2h_);
   ground->reserve(*num_patched_pts_h);
   nonground->reserve(*num_patched_pts_h);
-  cudaMemcpyAsync(metas_h, metas_d, sizeof(PointMeta) * (*num_patched_pts_h),
-                  cudaMemcpyDeviceToHost, streamd2h_); // dont synch for this op yet.
+  cudaStreamSynchronize(stream_);
+  cudaMemcpy(metas_h, metas_d, sizeof(PointMeta) * (*num_patched_pts_h),
+                  cudaMemcpyDeviceToHost); // dont synch for this op yet.
   // parse into ground pcl cloud
-  cudaStreamSynchronize(streamd2h_); // guarantee packed_pts_out_h loaded from device
   for (size_t i=0; i<(*num_patched_pts_h); i++)
   {
     const PointT& pt = packed_pts_out_h[i];
@@ -240,7 +240,6 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
   extract_init_seeds_gpu();
   fit_regionwise_planes_gpu();
   finalize_groundness_gpu();
-  cudaDeviceSynchronize();
   to_pcl(ground,nonground);
 }
 

@@ -147,11 +147,11 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
 
   // compute patch offsets
   // query the temporary storage size for the exclusive sum
-  CUDA_CHECK( cub::DeviceScan::ExclusiveSum(
+  CUDA_CHECK( cub::DeviceScan::InclusiveSum(
                       /* d_temp_storage */ nullptr,
                       /* temp_storage_bytes */ cub_dev_scan_sum_tmp_bytes,
                       /* d_in */ num_pts_in_patch_d,
-                      /* d_out */ offsets_d,
+                      /* d_out */ offsets_d+1,
                       /* num_items */ num_total_sectors,
                       /* stream */ stream)
   );
@@ -162,11 +162,11 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
   // allocate temporary storage for exclusive sum
   CUDA_CHECK(cudaMalloc(&cub_dev_scan_sum_tmp_, cub_dev_scan_sum_tmp_bytes));
 
-  CUDA_CHECK( cub::DeviceScan::ExclusiveSum(
+  CUDA_CHECK( cub::DeviceScan::InclusiveSum(
                   /* d_temp_storage */    cub_dev_scan_sum_tmp_,
                   /* temp_storage_bytes */ cub_dev_scan_sum_tmp_bytes,
                   /* d_in */              num_pts_in_patch_d,
-                  /* d_out */             offsets_d,
+                  /* d_out */             offsets_d+1,
                   /* num_items */         num_total_sectors,
                   /* stream */            stream
               ));
