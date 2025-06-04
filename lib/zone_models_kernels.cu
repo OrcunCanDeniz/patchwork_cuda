@@ -68,7 +68,7 @@ __global__ void count_patches_kernel( PointT *points,
   if (idx >= num_pts_in_cloud) return;
 
   const PointT &pt = points[idx];
-  if (pt.z < z_thresh) return;
+  if (pt.z < z_thresh) return; // erroneous point measurement
 
   int2 ring_sector_indices = get_ring_sector_idx(pt.x, pt.y);
 

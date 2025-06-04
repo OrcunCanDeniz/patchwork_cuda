@@ -356,41 +356,39 @@ void PatchWorkGPU<PointT>::fit_regionwise_planes_gpu()
   }
 }
 
-__device__ PatchState compute_ground_likelihood_estimation_status(
+__device__ uint8_t compute_ground_likelihood_estimation_statusv2(
     const int ring_idx,
     const double z_vec,
     const double z_elevation,
     const double surface_variable,
-    const int num_pts)
-{
-  // TODO i know this is divergent as it can be. i'll retry without branching sometime
-  if (num_pts < cnst_min_num_pts_thr) return FEW_PTS;
+    const uint num_pts_in_patch) {
+  const bool is_too_few_pts = num_pts_in_patch < cnst_min_num_pts_thr;
+  const bool is_too_tilted = z_vec < cnst_uprightness_thr;
+  const bool close_ring_flag = (ring_idx < cnst_num_rings_of_interest);
+  const bool elev_thr_flag = z_elevation > (-cnst_sensor_height + cnst_elevation_thr[ring_idx]);
+  const bool flatness_flag = cnst_flatness_thr[ring_idx] > surface_variable;
+  const bool glob_thr_flag = cnst_using_global_thr && (z_elevation > cnst_global_elevation_thr);
 
-  if (z_vec < cnst_uprightness_thr) {
-    return TOO_TILTED;
-  } else {  // orthogonal
-    if (ring_idx < cnst_num_rings_of_interest) {
-      if (z_elevation > -cnst_sensor_height + cnst_elevation_thr[ring_idx]) {
-        if (cnst_flatness_thr[ring_idx] > surface_variable) {
-          return FLAT_ENOUGH;
-        } else {
-          return TOO_HIGH_ELEV;
-        }
-      } else {
-        return UPRIGHT_ENOUGH;
-      }
-    } else {
-      if (cnst_using_global_thr && (z_elevation > cnst_global_elevation_thr)) {
-        return GLOB_TOO_HIGH_ELEV;
-      } else {
-        return UPRIGHT_ENOUGH;
-      }
-    }
+  const bool is_upright_enough1 = !is_too_tilted && close_ring_flag && !elev_thr_flag;
+  const bool is_flat_enough = !is_too_tilted && close_ring_flag && elev_thr_flag && flatness_flag;
+  const bool is_too_high_elev =
+      !is_too_tilted && close_ring_flag && elev_thr_flag && !flatness_flag;
+  const bool is_glob_too_high_elev = !is_too_tilted && !close_ring_flag && glob_thr_flag;
+  const bool is_upright_enough2 = !is_too_tilted && !close_ring_flag && !glob_thr_flag;
+  bool states[6] = {
+      is_too_few_pts, // 0
+      !is_too_few_pts && is_too_tilted, // 1
+      !is_too_few_pts && is_flat_enough,     // 2
+      !is_too_few_pts && is_too_high_elev,   // 3
+      !is_too_few_pts && (is_upright_enough1 || is_upright_enough2),  // 4
+      !is_too_few_pts && is_glob_too_high_elev, // 5
+  };
+  uint8_t sum= 1;
+  for(int i = 0; i < 5; ++i) {
+    sum += states[i];
   }
-  //is_too_tilted, too_high_elevation, patches assumes all points as nonground
-  //flat_enough, upright_enough, few_points no overwrite on decided points ground state
+  return sum;
 }
-
 __global__ void compute_patch_states(const uint* num_pts_in_patch,
                                      PCAFeature* pca_features,
                                      PatchState* patch_states)
@@ -402,51 +400,61 @@ __global__ void compute_patch_states(const uint* num_pts_in_patch,
   PCAFeature& pca_feat = pca_features[patch_idx];
   const float min_singular_val = pca_feat.singular_values_.z;
 
-  const double ground_z_vec = abs(pca_feat.normal_.z);
+  const double ground_z_vec = fabs(pca_feat.normal_.z);
   const double ground_z_elevation = pca_feat.mean_.z;
-  const double surface_variable = min_singular_val /
-                                  (pca_feat.singular_values_.x + pca_feat.singular_values_.y + pca_feat.singular_values_.z);
+  const double surface_variable = min_singular_val / (pca_feat.singular_values_.x +
+                                                      pca_feat.singular_values_.y +
+                                                      pca_feat.singular_values_.z);
   auto ring_idx = ring_sec_idx_from_lin_idx(patch_idx).x;
 
-  PatchState state = compute_ground_likelihood_estimation_status(ring_idx,
-                                                                 ground_z_vec,
-                                                                 ground_z_elevation,
-                                                                 surface_variable,
-                                                                 n);
-  patch_states[patch_idx] = state;
+  const uint8_t state = compute_ground_likelihood_estimation_statusv2(ring_idx,ground_z_vec,
+                                                                       ground_z_elevation,
+                                                                       surface_variable,n);
+  patch_states[patch_idx] = static_cast<PatchState>(state);
 }
 
 __global__ void set_groundness(
     const uint num_patched_pts,
     PointMeta* metas,
-    PatchState* patch_states,
-    const uint* patch_offsets)
+    PatchState* patch_states)
 {
   const uint tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= num_patched_pts) return;
-  PointMeta meta = metas[tid];
 
-  const uint patch_offset = patch_offsets[meta.lin_sec_idx];
+  const PointMeta meta = metas[tid];
+  const uint& patch_idx = meta.lin_sec_idx;
+  const PatchState feat = patch_states[patch_idx];
+
+  if (meta.iip < 0) return;
 
   // all_ground override : few_points,
   // all_NON_ground override : too_tilted, globally_too_high_elev, too_high_elev
   // as_is : flat_enough, upright_enough
   // no need to check if (state == FLAT_ENOUGH or state == UPRIGHT_ENOUGH)
   // these states keeps the groundness as it is. below expression will hopefully handle all cases already.
-  //  const bool ground_decision = max(
-  //      min(meta.ground + all_ground_override - all_NONground_override, 0), 1
-  //  );
+  const bool all_ground_override = (feat == PatchState::FEW_PTS);
+  const bool all_NONground_override =
+      (feat == PatchState::TOO_TILTED || feat == PatchState::GLOB_TOO_HIGH_ELEV ||
+       feat == PatchState::TOO_HIGH_ELEV);
 
-  // TODO: manipulate meta.ground for decision
+  const bool ground_decision = max(
+        min(meta.ground + all_ground_override,1) - all_NONground_override, 0);
+/* Above exoression is equivalent to the following truth table:
+  meta_ground | all_ground_override | all_NONground_override | ground_decision
+  False       | False               | False                  | False
+  False       | False               | True                   | False
+  False       | True                | False                  | True
+  True        | False               | False                  | True
+  True        | False               | True                   | False
+  True        | True                | False                  | True
+*/
 
-}
+  metas[tid].ground = ground_decision;
+ }
 
 template <typename PointT>
 void PatchWorkGPU<PointT>::finalize_groundness_gpu()
 {
-  cudaDeviceSynchronize();
-  CUDA_CHECK(cudaGetLastError());
-// compute patch features and ground likelihood
   compute_patch_states<<<num_total_sectors_, 1, 0, stream_>>>(num_pts_in_patch_d,
                                                               pca_features_d,
                                                               patch_states_d);
@@ -455,8 +463,7 @@ void PatchWorkGPU<PointT>::finalize_groundness_gpu()
   std::cout<< "Number of patched points: " << *num_patched_pts_h << std::endl;
   set_groundness<<<blocks, NUM_THREADS_PER_PATCH, 0, stream_>>>( *num_patched_pts_h,
                                                                   metas_d,
-                                                                  patch_states_d,
-                                                                  patch_offsets_d
+                                                                  patch_states_d
                                                                 );
 }
 

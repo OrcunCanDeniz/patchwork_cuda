@@ -239,7 +239,7 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
 
   extract_init_seeds_gpu();
   fit_regionwise_planes_gpu();
-//  finalize_groundness_gpu();
+  finalize_groundness_gpu();
   cudaDeviceSynchronize();
   to_pcl(ground,nonground);
 }
