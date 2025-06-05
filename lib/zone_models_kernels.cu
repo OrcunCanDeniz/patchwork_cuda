@@ -188,30 +188,37 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
   cudaStreamSynchronize(czm_stream_);
   num_patched_pts_h = std::accumulate(num_pts_per_patch_h.begin(), num_pts_per_patch_h.end(), 0u);
 
-  if (cub_sort_tmp_d == nullptr) {
-    // sort workspace size just depends on num_total_sectors,
-    //  thus the workspace can be reused through the lifetime of the program
-    cub::DeviceSegmentedSort::SortPairs(
-        cub_sort_tmp_d, cub_sort_tmp_bytes,
-        z_keys_d_, z_keys_out_d_, unsorted_patches_d_, patches_d,
-        num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1);
+  // sort workspace size just depends on num_total_sectors,
+  //  thus the workspace can be reused through the lifetime of the program
+  static size_t sort_query_bytes = 0;
+  cub::DeviceSegmentedSort::SortPairs(
+                                      nullptr, sort_query_bytes,
+                                      z_keys_d_, z_keys_out_d_,
+                                      unsorted_patches_d_, patches_d,
+                                      num_patched_pts_h, num_total_sectors,
+                                      offsets_d, offsets_d + 1, stream);
 
+  if (sort_query_bytes > cub_sort_tmp_bytes)
+  {
+    // if prev scratch pad allocation is not enough, free and realloc
+    if (cub_sort_tmp_d) cudaFreeAsync(cub_sort_tmp_d, stream);
+    cub_sort_tmp_bytes = sort_query_bytes;
     // Allocate temporary storage
-    cudaMalloc(&cub_sort_tmp_d, cub_sort_tmp_bytes);
+    cudaMallocAsync(&cub_sort_tmp_d, cub_sort_tmp_bytes, stream);
   }
 
   // sort pts within patches by z
   cub::DeviceSegmentedSort::SortPairs(
       cub_sort_tmp_d, cub_sort_tmp_bytes,
       z_keys_d_, z_keys_out_d_, unsorted_patches_d_, patches_d,
-      num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1);
+      num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1, stream);
 
   // sorted only pts metas[idx] is not associated to pts[idx] anymore, sort metas too
   // apply same sorting of pts to metas
   cub::DeviceSegmentedSort::SortPairs(
       cub_sort_tmp_d, cub_sort_tmp_bytes,
       z_keys_d_, z_keys_out_d_, metas_interm, metas_d,
-      num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1);
+      num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1, stream);
 
   cudaStreamSynchronize(stream);
   CUDA_CHECK(cudaGetLastError());
