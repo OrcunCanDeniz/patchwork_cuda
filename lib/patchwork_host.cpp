@@ -227,6 +227,8 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
 {
   // TODO: sensor height estimation is not implemented yet
   reset_buffers();
+  ground->clear();
+  nonground->clear();
   to_CUDA(cloud_in, stream_);
   bool ret = zone_model_->create_patches_gpu(cloud_in_d_, cloud_in->points.size(),
                                              num_pts_in_patch_d,  in_metas_d, metas_d,
@@ -284,15 +286,15 @@ void PatchWorkGPU<PointT>::viz_points( pcl::PointCloud<PointT>* patched_pc,
         if (metas_h[lin_patch_offset].ground) {
           // encode ring,sector info as intensity to be colorized when visualized
           PointT tmp_pt;
-          tmp_pt.x = pt.x;
-          tmp_pt.y = pt.y;
-          tmp_pt.z = pt.z;
+          tmp_pt.x = pt_loc.x;
+          tmp_pt.y = pt_loc.y;
+          tmp_pt.z = pt_loc.z;
           tmp_pt.intensity = 100;
           seed_pc->points.push_back(tmp_pt);
           num_patched_pts++;
           PointT lbr_pt;
-          lbr_pt.x = pt.x;
-          lbr_pt.y = pt.y;
+          lbr_pt.x = pt_loc.x;
+          lbr_pt.y = pt_loc.y;
           lbr_pt.z = metas_h[lin_patch_offset].lbr;
           lbr_pt.intensity = 0; // zero intensity for the LBR point
           seed_pc->points.push_back(lbr_pt);
