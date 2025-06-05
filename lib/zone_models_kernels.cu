@@ -147,20 +147,25 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
 
   // compute patch offsets
   // query the temporary storage size for the exclusive sum
+  static size_t sum_query_bytes{0};
   CUDA_CHECK( cub::DeviceScan::InclusiveSum(
                       /* d_temp_storage */ nullptr,
-                      /* temp_storage_bytes */ cub_dev_scan_sum_tmp_bytes,
+                      /* temp_storage_bytes */ sum_query_bytes,
                       /* d_in */ num_pts_in_patch_d,
                       /* d_out */ offsets_d+1,
                       /* num_items */ num_total_sectors,
                       /* stream */ stream)
   );
+  if (cub_dev_scan_sum_tmp_ == nullptr
+      || sum_query_bytes > cub_dev_scan_sum_tmp_bytes) {
 
-  cudaStreamSynchronize(stream);
-  CUDA_CHECK(cudaGetLastError());
-
-  // allocate temporary storage for exclusive sum
-  CUDA_CHECK(cudaMalloc(&cub_dev_scan_sum_tmp_, cub_dev_scan_sum_tmp_bytes));
+    if (cub_dev_scan_sum_tmp_) {
+      CUDA_CHECK(cudaFreeAsync(cub_dev_scan_sum_tmp_, stream));
+    }
+    // Allocate exactly what CUB needs
+    cub_dev_scan_sum_tmp_bytes = sum_query_bytes;
+    CUDA_CHECK(cudaMallocAsync(&cub_dev_scan_sum_tmp_, cub_dev_scan_sum_tmp_bytes, stream));
+  }
 
   CUDA_CHECK( cub::DeviceScan::InclusiveSum(
                   /* d_temp_storage */    cub_dev_scan_sum_tmp_,
@@ -198,7 +203,7 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
                                       num_patched_pts_h, num_total_sectors,
                                       offsets_d, offsets_d + 1, stream);
 
-  if (sort_query_bytes > cub_sort_tmp_bytes)
+  if (cub_sort_tmp_d == nullptr || sort_query_bytes > cub_sort_tmp_bytes)
   {
     // if prev scratch pad allocation is not enough, free and realloc
     if (cub_sort_tmp_d) cudaFreeAsync(cub_sort_tmp_d, stream);
