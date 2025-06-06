@@ -238,7 +238,9 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
   {
     throw std::runtime_error("Failed to launch create patches kernel.");
   }
-
+  // at this point we have only valid points, compacted, assigned to patches.
+  // they're sorted among their patch by ascending z. respective meta for a point can be accessed
+  // using the same buffer idx. patches[idx] -> meta[idx]
   extract_init_seeds_gpu();
   fit_regionwise_planes_gpu();
   finalize_groundness_gpu();

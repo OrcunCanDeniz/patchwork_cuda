@@ -45,78 +45,110 @@ __global__ void lbr_seed_kernel(
     const uint* offsets,
     const double close_zone_z_thresh,
     const int max_ring_first,
-    const uint min_pts_thres,
+    const uint min_lpr_pts_thres,
     PointMeta* metas)
 {
   const int patch_idx = blockIdx.x;
   const uint n = num_pts[patch_idx];
-
   if (n == 0) return;
-  const bool all_ground = n < min_pts_thres;
 
+  const bool close_zone = (patch_idx <= max_ring_first);
   const size_t offset = offsets[patch_idx];
-  const bool close_zone = (patch_idx < max_ring_first);
 
   const int tid = threadIdx.x;
   extern __shared__ float shared_mem[];
-  // split shared mem to 2 chunks
-  auto* thread_pt_z_sm = shared_mem; // first WARP_SIZE * sizeof(float)
-  auto* valid_flags_sm = reinterpret_cast<bool*>(&shared_mem[WARP_SIZE]); // following WARP_SIZE * sizeof(uint)
-  valid_flags_sm[tid] = false; // initialize valid flags to false
-  __syncthreads();  // make sure every thread sees the cleared flags
-  uint warp_cnt = 0;
 
-  //points are already sorted by z in the patch, so first few points in patch must be enough for kernel
-  int loop_times = (int)((min_pts_thres + WARP_SIZE-1) / WARP_SIZE);
+  // partition whole chunk of shmem
+  auto* thread_pt_z_sm = shared_mem;
+  auto* valid_flags_sm = reinterpret_cast<unsigned char*>(&thread_pt_z_sm[WARP_SIZE]);
+  auto* iter_flag_sm = reinterpret_cast<int*>(&valid_flags_sm[WARP_SIZE]);
 
-  for (int iter = 0; iter < loop_times; ++iter) {
-    int i = iter * WARP_SIZE + tid;
-    if (i < (int)n) {
-      PointT pt = patches[offset + i];
-      float z   = pt.z;
-      if (! valid_flags_sm[tid]) {
-        bool flag = (!close_zone) || (z > close_zone_z_thresh);
-        warp_cnt += (int)flag;      // accumulate 0 or 1 in this thread’s register
-        valid_flags_sm[tid] = flag;
-        thread_pt_z_sm[tid] = z;    // store z for this thread
-      }
-    }
-    __syncthreads();
-
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
-      warp_cnt += __shfl_down_sync(0xffffffffu, warp_cnt, offset);
-    }
-
-    warp_cnt = __shfl_sync(FULL_MASK, warp_cnt, 0); // broadcast warp count to all threads in the warp
-
-    if (warp_cnt >= min_pts_thres) break;
-        // we have more points than needed, sample first min_pts_thres points
-      // else; consume rest of the patch, continue to next point or exit loop depending on loop_times
-  }
-
-  const uint useful_pts_num = min(warp_cnt, min_pts_thres);
-
-  float thread_pt_z = 0.f;
-  if(tid<useful_pts_num)
-  {
-    thread_pt_z = thread_pt_z_sm[tid];
-  }
+  valid_flags_sm[tid] = 0;
+  iter_flag_sm[tid]   = -1;
   __syncthreads();
 
-  for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
-    thread_pt_z += __shfl_down_sync(0xffffffffu, thread_pt_z, offset);
+  int cum_cnt = 0;  // running total across iterations
+
+  // how many warp scans we need to cover n items in chunks of WARP_SIZE
+  int loop_times = (int)((n + WARP_SIZE - 1) / WARP_SIZE);
+
+  int iter;
+  for (iter = 0; iter < loop_times; ++iter) {
+    int i = iter * WARP_SIZE + tid;
+    bool local_flag = false;
+
+    // each thread checks if its point is valid and hasn’t been counted before
+    if (i < (int)n) {
+      float z = patches[offset + i].z;
+      bool flag = (!close_zone) || (z > close_zone_z_thresh);
+
+      if (flag && (valid_flags_sm[tid] == 0)) {
+        // Mark this thread’s slot as “counted”
+        valid_flags_sm[tid] = 1;
+        thread_pt_z_sm[tid] = z;
+        iter_flag_sm[tid]    = iter;
+        local_flag = true;
+      }
+    }
+
+    __syncthreads();
+
+    unsigned int mask = __ballot_sync(FULL_MASK, local_flag);
+    int this_iter_cnt = __popc(mask);
+
+    if (tid == 0) {
+      cum_cnt += this_iter_cnt;
+    }
+
+    // broadcast cum_cnt to all threads in warp
+    cum_cnt = __shfl_sync(FULL_MASK, cum_cnt, 0);
+
+    // do we have enough pts
+    if (cum_cnt >= (int)min_lpr_pts_thres) {
+      break;
+    }
+    __syncthreads();
   }
 
-  //broadcast value of thread_pt_z at tid==0 to all threads in the warp
-  thread_pt_z = __shfl_sync(FULL_MASK, thread_pt_z, 0);
+  // handle the case if we have more than enough pts
+  uint useful_pts_num = min(cum_cnt, (int)min_lpr_pts_thres);
+   /*
+    EDGE CASE: n>WARP_SIZE, in close ring threads; first 15 threads of warp couldnt find valid pts, remaining 17 threads found.
+    We still need 3 more. in the next iter rest of the 15 threads finds valid points and loads into ShMem.
+    --> Now first use_pts_num(20) num of elements of thread_pt_z is actually ful of valid pts, but within the whole
+     thread_pt_z buffer last 17 and first 3 elements must be used.
+     IDEA: also keep track of in which iteration data was loaded into shmem.
+     then choose pts from lower iters (from left to right in buffer) and continue with higher iters if only
+     current iters were not enough to fill num_lpt_pts_thres. left to right increase rule is consistent in same iteration.
+  */
 
-  const float threshold = (useful_pts_num!=0 ? (thread_pt_z / useful_pts_num) : 0.0f) + cnst_lbr_margin;
+  float sum_z = 0.0f;
+  int used_cnt = 0;
+  if (tid == 0) {
+    for (int e = 0; e <= iter; ++e) {
+      for (int th = 0; th < WARP_SIZE; ++th) {
+        if (used_cnt == (int)useful_pts_num) break;
+        if ((iter_flag_sm[th] == e) && (valid_flags_sm[th] == 1)) {
+          sum_z += thread_pt_z_sm[th];
+          used_cnt++;
+        }
+      }
+      if (used_cnt == (int)useful_pts_num) break;
+    }
+  }
 
-  for(unsigned int i = tid; i < n; i += WARP_SIZE){
-    // if all_ground is true, we consider all points as ground
-    const size_t glob_pt_idx = offset + i;
-    metas[glob_pt_idx].ground = all_ground || (patches[glob_pt_idx].z < threshold);
-    metas[glob_pt_idx].lbr = threshold; // to be able to visualize the LPR vs chosen points
+  sum_z   = __shfl_sync(FULL_MASK, sum_z,   0);
+  used_cnt = __shfl_sync(FULL_MASK, used_cnt, 0);
+
+  float threshold = cnst_lbr_margin;
+  if (used_cnt > 0) {
+    threshold += (sum_z / used_cnt) ;
+  }
+
+  for (uint i = tid; i < n; i += WARP_SIZE) {
+    size_t idx = offset + i;
+    metas[idx].ground = (patches[idx].z < threshold);
+    metas[idx].lbr    = threshold; // only to be aable to vis. later
   }
 }
 
@@ -130,14 +162,14 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu()
   // for patches in other zones, all points are used to calculate mean height in patch
   // variable num of threads per patch may be useful.
   dim3 blocks(num_total_sectors_);
-  size_t sm_size = WARP_SIZE * (sizeof(float) + sizeof(bool));
+  size_t sm_size = WARP_SIZE * (sizeof(float) + sizeof(bool) + sizeof(int));
   lbr_seed_kernel<<<blocks, WARP_SIZE, sm_size, stream_>>>(
                                                     patches_d,
                                                     num_pts_in_patch_d,
                                                     patch_offsets_d,
                                                     lowest_h_margin_in_close_zone,
                                                     zone_model_->max_ring_index_in_first_zone,
-                                                    num_min_pts_,
+                                                    num_lpr_,
                                                     metas_d
                                                   );
 }
@@ -164,7 +196,6 @@ __global__ void compute_patchwise_cov_mat (const PointT* patches,
   for(size_t i=0; i<feat_cnt; ++i) {
     sm_stats[tid * feat_cnt + i] = 0.0;
   }
-
   __syncthreads();
 
   double* local_stats = &sm_stats[tid * feat_cnt];
@@ -279,7 +310,6 @@ __global__ void filter_by_dist2plane(const PointT* patches,
   const uint& patch_idx = meta.lin_sec_idx;
   const PCAFeature& feat = pca_features[patch_idx];
 
-  if (meta.iip < 0) return; // if point was previously filtered out, skip it
   const PointT& pt = patches[tid];
 
   const float dist = feat.normal_.x * pt.x +
@@ -383,9 +413,10 @@ __device__ uint8_t compute_ground_likelihood_estimation_statusv2(
       !is_too_few_pts && (is_upright_enough1 || is_upright_enough2),  // 4
       !is_too_few_pts && is_glob_too_high_elev, // 5
   };
-  uint8_t sum= 1;
+  uint8_t sum= 0;
   for(int i = 0; i < 5; ++i) {
-    sum += states[i];
+    sum += states[i] * i;
+    if (states[i]) break;
   }
   return sum;
 }
@@ -398,7 +429,8 @@ __global__ void compute_patch_states(const uint* num_pts_in_patch,
   const uint patch_idx = blockIdx.x;
   const uint n = num_pts_in_patch[patch_idx];
   PCAFeature& pca_feat = pca_features[patch_idx];
-  const float min_singular_val = pca_feat.singular_values_.z;
+  const float min_singular_val = min(
+      min(pca_feat.singular_values_.x, pca_feat.singular_values_.y), pca_feat.singular_values_.z);
 
   const double ground_z_vec = fabs(pca_feat.normal_.z);
   const double ground_z_elevation = pca_feat.mean_.z;
@@ -410,6 +442,10 @@ __global__ void compute_patch_states(const uint* num_pts_in_patch,
   const uint8_t state = compute_ground_likelihood_estimation_statusv2(ring_idx,ground_z_vec,
                                                                        ground_z_elevation,
                                                                        surface_variable,n);
+  if( min_singular_val < 0 ) {
+    printf("patch idx: %u, pca_feat thresh: %f , num_pts %u, min_pts %u, state %u \n",
+           patch_idx, pca_feat.th_dist_d_, n, cnst_min_num_pts_thr, state);
+  }
   patch_states[patch_idx] = static_cast<PatchState>(state);
 }
 
@@ -425,8 +461,6 @@ __global__ void set_groundness(
   const uint& patch_idx = meta.lin_sec_idx;
   const PatchState feat = patch_states[patch_idx];
 
-  if (meta.iip < 0) return;
-
   // all_ground override : few_points,
   // all_NON_ground override : too_tilted, globally_too_high_elev, too_high_elev
   // as_is : flat_enough, upright_enough
@@ -437,8 +471,8 @@ __global__ void set_groundness(
       (feat == PatchState::TOO_TILTED || feat == PatchState::GLOB_TOO_HIGH_ELEV ||
        feat == PatchState::TOO_HIGH_ELEV);
 
-  const bool ground_decision = max(
-        min(meta.ground + all_ground_override,1) - all_NONground_override, 0);
+//  const bool ground_decision = max(
+//        min(meta.ground + all_ground_override,1) - all_NONground_override, 0);
 /* Above exoression is equivalent to the following truth table:
   meta_ground | all_ground_override | all_NONground_override | ground_decision
   False       | False               | False                  | False
@@ -449,7 +483,14 @@ __global__ void set_groundness(
   True        | True                | False                  | True
 */
 
-  metas[tid].ground = ground_decision;
+  if (all_ground_override)
+  {
+    metas[tid].ground = true;
+  } else if (all_NONground_override) {
+    metas[tid].ground = false;
+  } else{
+    metas[tid].ground = metas[tid].ground;
+  }
  }
 
 template <typename PointT>
