@@ -89,10 +89,6 @@ PatchWorkGPU<PointT>::PatchWorkGPU(ros::NodeHandle *nh)
   condParam(nh, "visualize", visualize_, true);
   condParam<std::string>(nh, "frame_patchwork", frame_patchwork, frame_patchwork);
 
-  poly_list_.header.frame_id = frame_patchwork;
-  poly_list_.polygons.reserve(130000);
-
-  reverted_points_by_flatness_.reserve(NUM_HEURISTIC_MAX_PTS_IN_PATCH);
 
   PlanePub = nh->advertise<jsk_recognition_msgs::PolygonArray>("/gpf/plane", 100);
   RevertedCloudPub = nh->advertise<sensor_msgs::PointCloud2>("/revert_pc", 100);
@@ -104,7 +100,6 @@ PatchWorkGPU<PointT>::PatchWorkGPU(ros::NodeHandle *nh)
                    2 * M_PI / num_sectors_each_zone_.at(2),
                    2 * M_PI / num_sectors_each_zone_.at(3)};
 
-//  initialize(regionwise_patches_);
   init_cuda();
   last_sector_1st_ring_ = std::accumulate(zone_model_->num_sectors_per_ring_.begin(),
                                               zone_model_->num_sectors_per_ring_.begin() + zone_model_->max_ring_index_in_first_zone, 0);
@@ -140,11 +135,11 @@ void PatchWorkGPU<PointT>::init_cuda()
   CUDA_CHECK(cudaMalloc((void**)&in_metas_d, sizeof(PointMeta) * max_pts_in_cld_));
   CUDA_CHECK(cudaMalloc((void**)&metas_d, sizeof(PointMeta) * max_pts_in_cld_));
 
-  CUDA_CHECK(cudaMalloc((void**)&cov_mats_d, sizeof(float)* 3 * 3 * num_total_sectors_));
+  CUDA_CHECK(cudaMalloc((void**)&cov_mats_d, sizeof(double)* 3 * 3 * num_total_sectors_));
   CUDA_CHECK(cudaMalloc((void**)&pca_features_d, num_total_sectors_ * sizeof(PCAFeature)));
 
   // cusolver buffers
-  CUDA_CHECK(cudaMalloc((void**)&eigen_vals_d, num_total_sectors_ * 3 * sizeof(float)));
+  CUDA_CHECK(cudaMalloc((void**)&eigen_vals_d, num_total_sectors_ * 3 * sizeof(double)));
   CUDA_CHECK(cudaMalloc((void**)&eig_info_d, num_total_sectors_ * sizeof(int)));
   eig_info_h.resize(num_total_sectors_);
   CUDA_CHECK(cudaMallocHost((void**)&eig_info_h, num_total_sectors_ * sizeof(int)));
@@ -170,7 +165,7 @@ void PatchWorkGPU<PointT>::setup_cusolver()
   CUSOLVER_CHECK(cusolverDnSetStream(cusolverH, stream_));
   CUSOLVER_CHECK(cusolverDnCreateSyevjInfo(&syevj_params));
   CUSOLVER_CHECK(cusolverDnXsyevjSetTolerance(syevj_params, 1.e-7));
-  CUSOLVER_CHECK(cusolverDnXsyevjSetMaxSweeps(syevj_params, 50));
+  CUSOLVER_CHECK(cusolverDnXsyevjSetMaxSweeps(syevj_params, 100));
   CUSOLVER_CHECK(cusolverDnXsyevjSetSortEig(syevj_params, 1));
 }
 
@@ -184,9 +179,9 @@ void PatchWorkGPU<PointT>::reset_buffers(cudaStream_t stream)
   CUDA_CHECK(cudaMemsetAsync(num_pts_in_patch_d, 0, num_pts_in_patch_size, stream));
   CUDA_CHECK(cudaMemsetAsync(patch_states_d, 0, sizeof(PatchState) * num_total_sectors_, stream));
   CUDA_CHECK(cudaMemsetAsync(patch_offsets_d, 0, num_pts_in_patch_size+ sizeof(uint), stream));
-  CUDA_CHECK(cudaMemsetAsync(cov_mats_d, 0, sizeof(float) * 3 * 3 * num_total_sectors_, stream));
+  CUDA_CHECK(cudaMemsetAsync(cov_mats_d, 0, sizeof(double) * 3 * 3 * num_total_sectors_, stream));
   CUDA_CHECK(cudaMemsetAsync(pca_features_d, 0, num_total_sectors_ * sizeof(PCAFeature), stream));
-  CUDA_CHECK(cudaMemsetAsync(eigen_vals_d, 0, num_total_sectors_ * 3 * sizeof(float), stream));
+  CUDA_CHECK(cudaMemsetAsync(eigen_vals_d, 0, num_total_sectors_ * 3 * sizeof(double), stream));
   CUDA_CHECK(cudaMemsetAsync(eig_info_d, 0, num_total_sectors_ * sizeof(int), stream));
   *num_patched_pts_h = 0;
 }
@@ -302,12 +297,12 @@ void PatchWorkGPU<PointT>::viz_points( pcl::PointCloud<PointT>* patched_pc,
           tmp_pt.intensity = 100;
           seed_pc->points.push_back(tmp_pt);
           num_patched_pts++;
-          PointT lbr_pt;
-          lbr_pt.x = pt_loc.x;
-          lbr_pt.y = pt_loc.y;
-          lbr_pt.z = metas_h[lin_patch_offset].lbr;
-          lbr_pt.intensity = 0; // zero intensity for the LBR point
-          seed_pc->points.push_back(lbr_pt);
+//          PointT lbr_pt;
+//          lbr_pt.x = pt_loc.x;
+//          lbr_pt.y = pt_loc.y;
+//          lbr_pt.z = metas_h[lin_patch_offset].lbr;
+//          lbr_pt.intensity = 0; // zero intensity for the LBR point
+//          seed_pc->points.push_back(lbr_pt);
         }
       }
     }

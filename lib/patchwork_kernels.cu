@@ -62,7 +62,7 @@ __global__ void lbr_seed_kernel(
   auto* thread_pt_z_sm = shared_mem;
   auto* valid_flags_sm = reinterpret_cast<unsigned char*>(&thread_pt_z_sm[WARP_SIZE]);
   auto* iter_flag_sm = reinterpret_cast<int*>(&valid_flags_sm[WARP_SIZE]);
-
+  // TODO: use only iter_flag_sm to check validity of points
   valid_flags_sm[tid] = 0;
   iter_flag_sm[tid]   = -1;
   __syncthreads();
@@ -176,7 +176,7 @@ template<typename PointT>
 __global__ void compute_patchwise_cov_mat (const PointT* patches,
                                             const uint* num_pts_per_patch,
                                             const uint* offsets,
-                                            float* cov_out,
+                                            double* cov_out,
                                             PointMeta* metas,
                                             PCAFeature* pca_features
                                           )
@@ -242,9 +242,10 @@ __global__ void compute_patchwise_cov_mat (const PointT* patches,
     const double yz = (sm_stats[4] - count* y_mean * z_mean) * inv_count_cov;
     const double zz = (sm_stats[5] - count* z_mean * z_mean) * inv_count_cov;
 
-    cov_mat[0] = (float)xx; cov_mat[3] = (float)xy; cov_mat[6] = (float)xz;
-    cov_mat[1] = (float)xy; cov_mat[4] = (float)yy; cov_mat[7] = (float)yz;
-    cov_mat[2] = (float)xz; cov_mat[5] = (float)yz; cov_mat[8] = (float)zz;
+  // TODO:fill only upper or lower triangular part of cov_mat
+    cov_mat[0] = xx; cov_mat[3] = xy; cov_mat[6] = xz;
+    cov_mat[1] = xy; cov_mat[4] = yy; cov_mat[7] = yz;
+    cov_mat[2] = xz; cov_mat[5] = yz; cov_mat[8] = zz;
 
     // do not care about patches with insufficient points, we'll handle those later
 
@@ -256,8 +257,8 @@ __global__ void compute_patchwise_cov_mat (const PointT* patches,
   }
 }
 
-__global__ void set_patch_pca_features(float* eig_vects,
-                                       float* eig_vals,
+__global__ void set_patch_pca_features(double* eig_vects,
+                                       double* eig_vals,
                                        PCAFeature* pca_features,
                                        const float th_dist)
 {
@@ -277,11 +278,11 @@ __global__ void set_patch_pca_features(float* eig_vects,
       (pca_feature.singular_values_.y - pca_feature.singular_values_.z) * inv_sing_val;
 
   // 1st vect is the one with least eig val. thus plane normal.
-  float* eig_vectors_patch = &eig_vects[patch_idx * 9];
+  double* eig_vectors_patch = &eig_vects[patch_idx * 9];
   // eig vectors are stored col-major
-  float vx = eig_vectors_patch[0];
-  float vy = eig_vectors_patch[1];
-  float vz = eig_vectors_patch[2];
+  float vx = static_cast<float>(eig_vectors_patch[0]);
+  float vy = static_cast<float>(eig_vectors_patch[1]);
+  float vz = static_cast<float>(eig_vectors_patch[2]);
 
   int inv_vect = (vz < 0.0f) ? -1 : 1;
   pca_feature.normal_ = make_float3( vx * inv_vect,
@@ -338,8 +339,7 @@ void PatchWorkGPU<PointT>::fit_regionwise_planes_gpu()
     if(!work_d_alloced)
     {
       // allocate workspace for cuSolver
-      cudaStreamSynchronize(stream_);
-      CUSOLVER_CHECK(cusolverDnSsyevjBatched_bufferSize(cusolverH,
+      CUSOLVER_CHECK(cusolverDnDsyevjBatched_bufferSize(cusolverH,
                                                         CUSOLVER_EIG_MODE_VECTOR,
                                                         CUBLAS_FILL_MODE_UPPER,
                                                         3,
@@ -350,11 +350,11 @@ void PatchWorkGPU<PointT>::fit_regionwise_planes_gpu()
                                                         syevj_params,
                                                         num_total_sectors_));
 
-      CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&work_d), sizeof(float) * lwork));
+      CUDA_CHECK(cudaMallocAsync(reinterpret_cast<void**>(&work_d), sizeof(double) * lwork, stream_));
       work_d_alloced = true;
     }
 
-    CUSOLVER_CHECK(cusolverDnSsyevjBatched(cusolverH,
+    CUSOLVER_CHECK(cusolverDnDsyevjBatched(cusolverH,
                                            CUSOLVER_EIG_MODE_VECTOR,
                                            CUBLAS_FILL_MODE_UPPER,
                                            3,
@@ -495,7 +495,6 @@ void PatchWorkGPU<PointT>::finalize_groundness_gpu()
                                                               patch_states_d);
 
   dim3 blocks(divup(*num_patched_pts_h, NUM_THREADS_PER_PATCH));
-  std::cout<< "Number of patched points: " << *num_patched_pts_h << std::endl;
   set_groundness<<<blocks, NUM_THREADS_PER_PATCH, 0, stream_>>>( *num_patched_pts_h,
                                                                   metas_d,
                                                                   patch_states_d
