@@ -257,8 +257,6 @@ template<typename PointT>
 void PatchWorkGPU<PointT>::viz_points( pcl::PointCloud<PointT>* patched_pc,
                                       pcl::PointCloud<PointT>* seed_pc)
 {
-  CUDA_CHECK(cudaMemcpyAsync(metas_h, metas_d, sizeof(PointMeta) * max_pts_in_cld_,
-                             cudaMemcpyDeviceToHost, streamd2h_));
   CUDA_CHECK(cudaMemcpyAsync(patches_h, patches_d, patches_size,
                              cudaMemcpyDeviceToHost, streamd2h_));
   CUDA_CHECK(cudaMemcpyAsync(num_pts_in_patch_h, num_pts_in_patch_d, num_pts_in_patch_size,
@@ -276,11 +274,6 @@ void PatchWorkGPU<PointT>::viz_points( pcl::PointCloud<PointT>* patched_pc,
     {
       auto patch_numel_offset =  ring_offset + sector_idx;
       uint num_pts = *(num_pts_in_patch_h + patch_numel_offset);
-
-      if (num_pts >= MAX_POINTS_PER_PATCH)
-      {
-        throw std::runtime_error("Number of points in a patch exceeds the maximum limit.");
-      }
 
       for(std::size_t pt_idx=0; pt_idx<num_pts; pt_idx++)
       {
