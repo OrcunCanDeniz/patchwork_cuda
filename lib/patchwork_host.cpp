@@ -106,6 +106,10 @@ PatchWorkGPU<PointT>::PatchWorkGPU(ros::NodeHandle *nh)
 
 //  initialize(regionwise_patches_);
   init_cuda();
+  last_sector_1st_ring_ = std::accumulate(zone_model_->num_sectors_per_ring_.begin(),
+                                              zone_model_->num_sectors_per_ring_.begin() + zone_model_->max_ring_index_in_first_zone, 0);
+
+
   std::cout << "INITIALIZATION COMPLETE" << std::endl;
 }
 
@@ -127,11 +131,11 @@ void PatchWorkGPU<PointT>::init_cuda()
   num_total_sectors_ = std::accumulate(zone_model_->num_sectors_per_ring_.begin(),
                                         zone_model_->num_sectors_per_ring_.end(), 0);
 
-  num_pts_in_patch_size = (num_total_sectors_+1) * sizeof(uint);
+  num_pts_in_patch_size = (num_total_sectors_) * sizeof(uint);
   CUDA_CHECK(cudaMalloc((void**)&num_pts_in_patch_d, num_pts_in_patch_size));
   CUDA_CHECK(cudaMalloc((void**)&patch_states_d, sizeof(PatchState)* num_total_sectors_));
-  CUDA_CHECK(cudaMalloc((void**)&patch_offsets_d, num_pts_in_patch_size));
-  CUDA_CHECK(cudaMallocHost((void**)&patch_offsets_h, num_pts_in_patch_size));
+  CUDA_CHECK(cudaMalloc((void**)&patch_offsets_d, num_pts_in_patch_size + sizeof(uint)));
+  CUDA_CHECK(cudaMallocHost((void**)&patch_offsets_h, num_pts_in_patch_size + sizeof(uint)));
 
   CUDA_CHECK(cudaMalloc((void**)&in_metas_d, sizeof(PointMeta) * max_pts_in_cld_));
   CUDA_CHECK(cudaMalloc((void**)&metas_d, sizeof(PointMeta) * max_pts_in_cld_));
@@ -179,7 +183,7 @@ void PatchWorkGPU<PointT>::reset_buffers(cudaStream_t stream)
   CUDA_CHECK(cudaMemsetAsync(metas_d, 0, sizeof(PointMeta) * max_pts_in_cld_, stream));
   CUDA_CHECK(cudaMemsetAsync(num_pts_in_patch_d, 0, num_pts_in_patch_size, stream));
   CUDA_CHECK(cudaMemsetAsync(patch_states_d, 0, sizeof(PatchState) * num_total_sectors_, stream));
-  CUDA_CHECK(cudaMemsetAsync(patch_offsets_d, 0, num_pts_in_patch_size, stream));
+  CUDA_CHECK(cudaMemsetAsync(patch_offsets_d, 0, num_pts_in_patch_size+ sizeof(uint), stream));
   CUDA_CHECK(cudaMemsetAsync(cov_mats_d, 0, sizeof(float) * 3 * 3 * num_total_sectors_, stream));
   CUDA_CHECK(cudaMemsetAsync(pca_features_d, 0, num_total_sectors_ * sizeof(PCAFeature), stream));
   CUDA_CHECK(cudaMemsetAsync(eigen_vals_d, 0, num_total_sectors_ * 3 * sizeof(float), stream));

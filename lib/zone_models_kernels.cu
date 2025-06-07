@@ -68,15 +68,13 @@ __global__ void count_patches_kernel( PointT *points,
   if (idx >= num_pts_in_cloud) return;
 
   const PointT &pt = points[idx];
-  if (pt.z < z_thresh) return; // erroneous point measurement
-
   int2 ring_sector_indices = get_ring_sector_idx(pt.x, pt.y);
 
   const size_t lin_sector_idx = resolve_lin_sec_idx(ring_sector_indices.x, ring_sector_indices.y);
   uint* patch_numel_ptr = num_pts_in_patch + lin_sector_idx;
   int iip = -1; // intra-patch index
 
-  if (ring_sector_indices.x >= 0 )
+  if (ring_sector_indices.x >= 0 && pt.z > z_thresh)
   {
    iip = atomicAdd(patch_numel_ptr, 1); // save this as idx in patch
   }
@@ -99,7 +97,7 @@ __global__ void move_points_to_patch_kernel(PointT* points,
   if (idx >= num_pc_points) return;
 
   const PointT &pt = points[idx];
-  if (pt.z < z_thresh) return;
+//  if (pt.z < z_thresh) return; //  this is obsolete. meta.iip already validates points
   PointMeta meta = in_metas_d[idx];
   if (meta.iip == -1) return;
   const auto pt_offset = offsets_d[meta.lin_sec_idx] + meta.iip;
@@ -123,7 +121,6 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
     throw std::runtime_error("Number of points in the point cloud exceeds the maximum limit.");
   }
 
-  // TODO : definition of z_thresh might change. come back here later
   float z_thresh = -sensor_height_ - 2.0; // threshold for z coordinate
 
   static const uint num_threads = 512;
@@ -156,6 +153,9 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
                       /* num_items */ num_total_sectors,
                       /* stream */ stream)
   );
+  // to have both inclusive and exclusive sum, we have num_segments+1 buffer. starting to write 1st
+//  element (instead of 0th) we keep the first patch offset as zero, but also keep the correct buffer end
+//  at num_segments+1th element. End offset is specifically needed for segmented sort
   if (cub_dev_scan_sum_tmp_ == nullptr
       || sum_query_bytes > cub_dev_scan_sum_tmp_bytes) {
 

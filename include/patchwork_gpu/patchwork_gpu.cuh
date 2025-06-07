@@ -93,7 +93,6 @@ enum PatchState : uint8_t
 };
 
 struct PCAFeature {
-  float3 principal_;
   float3 normal_;
   float3 singular_values_;
   float3 mean_;
@@ -243,6 +242,7 @@ class PatchWorkGPU {
   std::vector<int> eig_info_h;
 
   uint num_total_sectors_{0};
+  uint last_sector_1st_ring_{0};
 
   // For ATAT (All-Terrain Automatic heighT estimator)
   bool ATAT_ON_;

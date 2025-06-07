@@ -52,7 +52,7 @@ __global__ void lbr_seed_kernel(
   const uint n = num_pts[patch_idx];
   if (n == 0) return;
 
-  const bool close_zone = (patch_idx <= max_ring_first);
+  const bool close_zone = (patch_idx < max_ring_first);
   const size_t offset = offsets[patch_idx];
 
   const int tid = threadIdx.x;
@@ -90,8 +90,6 @@ __global__ void lbr_seed_kernel(
         local_flag = true;
       }
     }
-
-    __syncthreads();
 
     unsigned int mask = __ballot_sync(FULL_MASK, local_flag);
     int this_iter_cnt = __popc(mask);
@@ -442,10 +440,6 @@ __global__ void compute_patch_states(const uint* num_pts_in_patch,
   const uint8_t state = compute_ground_likelihood_estimation_statusv2(ring_idx,ground_z_vec,
                                                                        ground_z_elevation,
                                                                        surface_variable,n);
-  if( min_singular_val < 0 ) {
-    printf("patch idx: %u, pca_feat thresh: %f , num_pts %u, min_pts %u, state %u \n",
-           patch_idx, pca_feat.th_dist_d_, n, cnst_min_num_pts_thr, state);
-  }
   patch_states[patch_idx] = static_cast<PatchState>(state);
 }
 
