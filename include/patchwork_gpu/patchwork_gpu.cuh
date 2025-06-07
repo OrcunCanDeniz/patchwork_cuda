@@ -148,7 +148,8 @@ class PatchWorkGPU {
   void fit_regionwise_planes_gpu();
   void finalize_groundness_gpu();
   void to_pcl(pcl::PointCloud<PointT>* ground,
-         pcl::PointCloud<PointT>* nonground);
+         pcl::PointCloud<PointT>* nonground,
+         const bool with_lpr=false);
 
   void viz_points( pcl::PointCloud<PointT>* patched_pc,
                          pcl::PointCloud<PointT>* seed_pc );

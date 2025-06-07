@@ -202,7 +202,8 @@ void PatchWorkGPU<PointT>::to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t st
 
 template <typename PointT>
 void PatchWorkGPU<PointT>::to_pcl(pcl::PointCloud<PointT>* ground,
-                                  pcl::PointCloud<PointT>* nonground)
+                                  pcl::PointCloud<PointT>* nonground,
+                                  const bool with_lpr)
 {
   cudaMemcpyAsync(packed_pts_out_h, patches_d, sizeof(PointT) * (*num_patched_pts_h),
                   cudaMemcpyDeviceToHost, streamd2h_);
@@ -214,12 +215,22 @@ void PatchWorkGPU<PointT>::to_pcl(pcl::PointCloud<PointT>* ground,
   // parse into ground pcl cloud
   for (size_t i=0; i<(*num_patched_pts_h); i++)
   {
-    const PointT& pt = packed_pts_out_h[i];
+    static PointT pt_lpr;
+    PointT& pt = packed_pts_out_h[i];
+    if(with_lpr)
+    {
+      pt_lpr = pt;
+      pt_lpr.z = metas_h[i].lbr;
+      pt_lpr.intensity = 100;
+      pt.intensity = 0;
+    }
     if (metas_h[i].ground)
     {
       ground->push_back(pt);
+      if(with_lpr) ground->push_back(pt_lpr);
     } else {
       nonground->push_back(pt);
+      if(with_lpr) nonground->push_back(pt_lpr);
     }
   }
 }
