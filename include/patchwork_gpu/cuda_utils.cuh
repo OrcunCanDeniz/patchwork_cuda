@@ -33,7 +33,7 @@ __device__ size_t resolve_lin_sec_idx(int ring_idx, int sector_idx)
   // Calculate linear sector index based on ring and sector indices
   uint lin_sector_idx{0};
   for (int i=0; i<ring_idx; ++i) {
-    lin_sector_idx += cnst_num_sectors_per_ring[i-1];
+    lin_sector_idx += cnst_num_sectors_per_ring[i];
   }
   return lin_sector_idx + sector_idx;
 }
