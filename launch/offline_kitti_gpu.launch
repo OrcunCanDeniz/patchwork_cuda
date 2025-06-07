@@ -1,0 +1,16 @@
+<launch>
+    <!-- Define an argument for data_path with a default value -->
+    <!-- See the example. It should indicate the sequence directory -->
+    <arg name="data_path" default="/home/orcun/kitti/labeled_dataset/sequences/04" />
+    <param name="/data_path" type="string" value="$(arg data_path)" />
+    <node name="$(anon offline_kitti)" pkg="patchwork" type="offline_kitti_gpu" output="screen">
+        <rosparam param="/algorithm">"patchwork"</rosparam>
+        <rosparam param="/save_flag">false</rosparam>
+        <rosparam param="/use_sor_before_save">false</rosparam>
+        <rosparam param="/start_frame">0</rosparam>
+        <rosparam param="/end_frame">10000</rosparam>
+
+    </node>
+
+    <rosparam command="load" file="$(find patchwork)/config/params_kitti.yaml" />
+</launch>
