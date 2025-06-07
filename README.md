@@ -8,6 +8,11 @@ Only the Offline KITTI Dataset node is implemented in this repository,
 but the class interface is kept pretty much the same. Just pass the point type
 of your point cloud to the `Patchwork` class, and it should work.
 
+Tested on:
+- Ubuntu 20.04
+- CUDA 11.8
+- ROS Noetic
+
 ### Prepare Offline KITTI dataset
 
 1. Download [SemanticKITTI](http://www.semantic-kitti.org/dataset.html#download) Odometry dataset (We also need labels since we also open the evaluation code! :)
