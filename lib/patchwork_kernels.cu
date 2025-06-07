@@ -168,7 +168,7 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu()
                                                     num_pts_in_patch_d,
                                                     patch_offsets_d,
                                                     lowest_h_margin_in_close_zone,
-                                                    zone_model_->max_ring_index_in_first_zone,
+                                                    last_sector_1st_ring_,
                                                     num_lpr_,
                                                     metas_d
                                                   );
