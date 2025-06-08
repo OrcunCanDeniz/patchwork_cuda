@@ -24,7 +24,7 @@ struct PointMeta {
     int sector_idx; // sector index
     uint lin_sec_idx; // patch index
     int iip{-1}; // intra-patch index !!!: this changes after segmented sort, and set value is invalid
-    float lbr{0.0f}; // low point representative (LPR) for the patch
+//    float lbr{0.0f}; // low point representative (LPR) for the patch
     bool ground{false}; // whether this point is a seed point
 };
 
