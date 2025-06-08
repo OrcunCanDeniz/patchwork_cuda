@@ -186,14 +186,6 @@ void PatchWorkGPU<PointT>::reset_buffers(cudaStream_t stream)
   CUDA_CHECK(cudaMemsetAsync(eig_info_d, 0, num_total_sectors_ * sizeof(int), stream));
   *num_patched_pts_h = 0;
 }
-template<typename PointT>
-void PatchWorkGPU<PointT>::to_CUDA( pcl::PointCloud<PointT>* pc)
-{
-  CUDA_CHECK(cudaMemcpyAsync(cloud_in_d_, pc->points.data(), pc->points.size() * sizeof(PointT),
-                             cudaMemcpyHostToDevice, stream_));
-  CUDA_CHECK(cudaStreamSynchronize(stream_));
-  CUDA_CHECK(cudaGetLastError());
-}
 
 
 template <typename PointT>
@@ -239,9 +231,11 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
 {
   // TODO: sensor height estimation is not implemented yet
   reset_buffers();
+
+  CUDA_CHECK(cudaMemcpyAsync(cloud_in_d_, cloud_in->points.data(), cloud_in->points.size() * sizeof(PointT),
+                             cudaMemcpyHostToDevice, stream_));
   ground->clear();
   nonground->clear();
-  to_CUDA(cloud_in);
   // mark the start of processing
   cudaEventRecord(cuEvent_start,stream_);
 

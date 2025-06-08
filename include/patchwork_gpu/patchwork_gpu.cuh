@@ -143,7 +143,6 @@ class PatchWorkGPU {
                        float* time_taken);
   void init_cuda();
   void setup_cusolver();
-  void to_CUDA( pcl::PointCloud<PointT>* pc);
   void extract_init_seeds_gpu();
   void set_cnst_mem();
   void fit_regionwise_planes_gpu();
