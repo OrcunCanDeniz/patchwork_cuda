@@ -157,9 +157,6 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
                                                         in_metas_d,
                                                         z_thresh,
                                                         num_pc_pts);
-  // TODO: stream synch may not be necessary here
-  cudaStreamSynchronize(stream);
-  CUDA_CHECK(cudaGetLastError());
 
   // compute patch offsets
   // query the temporary storage size for the exclusive sum
@@ -242,9 +239,6 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
                                                                      patches_d, metas_d,
                                                                      sorted_perm_idx, num_patched_pts_h
                                                                      );
-
-  cudaStreamSynchronize(stream);
-  CUDA_CHECK(cudaGetLastError());
 
   return true;
 }
