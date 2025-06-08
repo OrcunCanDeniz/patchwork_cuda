@@ -107,6 +107,25 @@ __global__ void move_points_to_patch_kernel(PointT* points,
 }
 
 template<typename PointT>
+__global__ void apply_permutation_kernel(const PointT* in_patches_d,
+                                          const PointMeta* in_metas_d,
+                                          PointT* sorted_patches_d,
+                                          PointMeta* sorted_metas_d,
+                                          const uint* permutation,
+                                          uint num_pc_points) {
+  const uint dst_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (dst_idx >= num_pc_points) return;
+  const uint src_idx = permutation[dst_idx];
+
+  const PointMeta& meta = in_metas_d[src_idx];
+  if (meta.iip == -1) return;
+  const PointT& pt = in_patches_d[src_idx];
+  sorted_patches_d[dst_idx] = pt;
+  sorted_metas_d[dst_idx] = meta;
+}
+
+
+template<typename PointT>
 bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int num_pc_pts,
                                                           uint* num_pts_in_patch_d,
                                                           PointMeta* in_metas_d,
@@ -199,7 +218,7 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
   cub::DeviceSegmentedSort::SortPairs(
                                       nullptr, sort_query_bytes,
                                       z_keys_d_, z_keys_out_d_,
-                                      unsorted_patches_d_, patches_d,
+                                      raw_perm_idx, sorted_perm_idx,
                                       num_patched_pts_h, num_total_sectors,
                                       offsets_d, offsets_d + 1, stream);
 
@@ -211,24 +230,39 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
     // Allocate temporary storage
     cudaMallocAsync(&cub_sort_tmp_d, cub_sort_tmp_bytes, stream);
   }
-
-  // sort pts within patches by z
+  // sort pts within patches by z. only get idx mapping
   cub::DeviceSegmentedSort::SortPairs(
       cub_sort_tmp_d, cub_sort_tmp_bytes,
-      z_keys_d_, z_keys_out_d_, unsorted_patches_d_, patches_d,
+      z_keys_d_, z_keys_out_d_, raw_perm_idx, sorted_perm_idx,
       num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1, stream);
 
-  // sorted only pts metas[idx] is not associated to pts[idx] anymore, sort metas too
-  // apply same sorting of pts to metas
-  cub::DeviceSegmentedSort::SortPairs(
-      cub_sort_tmp_d, cub_sort_tmp_bytes,
-      z_keys_d_, z_keys_out_d_, metas_interm, metas_d,
-      num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1, stream);
+  dim3 perm_threads(num_threads);
+  dim3 perm_blocks(divup(num_patched_pts_h, num_threads));
+  apply_permutation_kernel<<<perm_blocks, perm_threads, 0, stream>>>(unsorted_patches_d_, metas_interm,
+                                                                     patches_d, metas_d,
+                                                                     sorted_perm_idx, num_patched_pts_h
+                                                                     );
 
   cudaStreamSynchronize(stream);
   CUDA_CHECK(cudaGetLastError());
 
   return true;
+}
+
+__global__ void set_lin_inc_mem(uint* dst, const uint numel)
+{
+  const uint tid = threadIdx.x + blockIdx.x * blockDim.x;
+  if (tid>=numel) return;
+  dst[tid] = tid;
+}
+
+template<typename PointT>
+void ConcentricZoneModelGPU<PointT>::set_permute_idx()
+{
+  dim3 threads(512);
+  dim3 blocks(divup(max_num_pts, 512));
+
+  set_lin_inc_mem<<<blocks, threads, 0, czm_stream_>>>(raw_perm_idx, max_num_pts);
 }
 
 template<typename PointT>

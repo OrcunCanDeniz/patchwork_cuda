@@ -34,6 +34,8 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
    void  *cub_sort_tmp_d = nullptr;
    size_t cub_sort_tmp_bytes = 0;
    PointMeta* metas_interm = nullptr;
+   uint* raw_perm_idx = nullptr;
+   uint* sorted_perm_idx = nullptr;
    cudaStream_t czm_stream_;
 
   ConcentricZoneModelGPU(const std::string &sensor_model,
@@ -60,8 +62,10 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
       CUDA_CHECK(cudaMalloc((void**)&z_keys_out_d_, max_num_pts * sizeof(float)));
       CUDA_CHECK(cudaMalloc((void**)&unsorted_patches_d_, max_num_pts * sizeof(PointT)));
       CUDA_CHECK(cudaMalloc((void**)&metas_interm, max_num_pts * sizeof(PointMeta)));
+      CUDA_CHECK(cudaMalloc((void**)&raw_perm_idx, max_num_pts * sizeof(uint)))
+      CUDA_CHECK(cudaMalloc((void**)&sorted_perm_idx, max_num_pts * sizeof(uint)))
 
-
+      set_permute_idx();
 #ifdef VIZ
         constexpr uint8_t PALETTE[3][3] = {
             {255,   0,   0},  // red
@@ -95,6 +99,8 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
     cudaFree(z_keys_out_d_);
     cudaFree(unsorted_patches_d_);
   }
+
+  void set_permute_idx();
 
   void set_cnst_mem();
 
