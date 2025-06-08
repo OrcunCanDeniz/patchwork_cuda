@@ -208,7 +208,7 @@ void PatchWorkGPU<PointT>::to_pcl(pcl::PointCloud<PointT>* ground,
     if(with_lpr)
     {
       pt_lpr = pt;
-      pt_lpr.z = metas_h[i].lbr;
+//      pt_lpr.z = metas_h[i].lbr;
       pt_lpr.intensity = 100;
       pt.intensity = 0;
     }
