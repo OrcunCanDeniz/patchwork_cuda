@@ -60,10 +60,7 @@ __global__ void lbr_seed_kernel(
 
   // partition whole chunk of shmem
   auto* thread_pt_z_sm = shared_mem;
-  auto* valid_flags_sm = reinterpret_cast<unsigned char*>(&thread_pt_z_sm[WARP_SIZE]);
-  auto* iter_flag_sm = reinterpret_cast<int*>(&valid_flags_sm[WARP_SIZE]);
-  // TODO: use only iter_flag_sm to check validity of points
-  valid_flags_sm[tid] = 0;
+  auto* iter_flag_sm = reinterpret_cast<int*>(&thread_pt_z_sm[WARP_SIZE]);
   iter_flag_sm[tid]   = -1;
   __syncthreads();
 
@@ -82,9 +79,8 @@ __global__ void lbr_seed_kernel(
       float z = patches[offset + i].z;
       bool flag = (!close_zone) || (z > close_zone_z_thresh);
 
-      if (flag && (valid_flags_sm[tid] == 0)) {
+      if (flag && (iter_flag_sm[tid] == -1)) {
         // Mark this thread’s slot as “counted”
-        valid_flags_sm[tid] = 1;
         thread_pt_z_sm[tid] = z;
         iter_flag_sm[tid]    = iter;
         local_flag = true;
@@ -126,7 +122,7 @@ __global__ void lbr_seed_kernel(
     for (int e = 0; e <= iter; ++e) {
       for (int th = 0; th < WARP_SIZE; ++th) {
         if (used_cnt == (int)useful_pts_num) break;
-        if ((iter_flag_sm[th] == e) && (valid_flags_sm[th] == 1)) {
+        if (iter_flag_sm[th] == e) {
           sum_z += thread_pt_z_sm[th];
           used_cnt++;
         }
@@ -146,7 +142,7 @@ __global__ void lbr_seed_kernel(
   for (uint i = tid; i < n; i += WARP_SIZE) {
     size_t idx = offset + i;
     metas[idx].ground = (patches[idx].z < threshold);
-    metas[idx].lbr    = threshold; // only to be aable to vis. later
+//    metas[idx].lbr    = threshold; // only to be aable to vis. later
   }
 }
 
@@ -160,7 +156,7 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu()
   // for patches in other zones, all points are used to calculate mean height in patch
   // variable num of threads per patch may be useful.
   dim3 blocks(num_total_sectors_);
-  size_t sm_size = WARP_SIZE * (sizeof(float) + sizeof(bool) + sizeof(int));
+  size_t sm_size = WARP_SIZE * (sizeof(float) + sizeof(int));
   lbr_seed_kernel<<<blocks, WARP_SIZE, sm_size, stream_>>>(
                                                     patches_d,
                                                     num_pts_in_patch_d,
