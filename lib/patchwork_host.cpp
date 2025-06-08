@@ -115,9 +115,12 @@ void PatchWorkGPU<PointT>::init_cuda()
 
   CUDA_CHECK(cudaMalloc((void**)&cloud_in_d_, sizeof(PointT) * max_pts_in_cld_));
 
-  cudaStreamCreate(&stream_);
-  cudaStreamCreate(&streamd2h_);
-  cudaStreamCreate(&streamh2d_);
+  CUDA_CHECK(cudaStreamCreate(&stream_));
+  CUDA_CHECK(cudaStreamCreate(&streamd2h_));
+  CUDA_CHECK(cudaStreamCreate(&streamh2d_));
+
+  CUDA_CHECK(cudaEventCreate(&cuEvent_start));
+  CUDA_CHECK(cudaEventCreate(&cuEvent_stop));
 
   // allocate memory for patches
   patches_size = max_pts_in_cld_ * sizeof(PointT);
@@ -184,11 +187,11 @@ void PatchWorkGPU<PointT>::reset_buffers(cudaStream_t stream)
   *num_patched_pts_h = 0;
 }
 template<typename PointT>
-void PatchWorkGPU<PointT>::to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t stream)
+void PatchWorkGPU<PointT>::to_CUDA( pcl::PointCloud<PointT>* pc)
 {
   CUDA_CHECK(cudaMemcpyAsync(cloud_in_d_, pc->points.data(), pc->points.size() * sizeof(PointT),
-                             cudaMemcpyHostToDevice, stream));
-  CUDA_CHECK(cudaStreamSynchronize(stream));
+                             cudaMemcpyHostToDevice, stream_));
+  CUDA_CHECK(cudaStreamSynchronize(stream_));
   CUDA_CHECK(cudaGetLastError());
 }
 
@@ -231,13 +234,17 @@ void PatchWorkGPU<PointT>::to_pcl(pcl::PointCloud<PointT>* ground,
 template<typename PointT>
 void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
                                            pcl::PointCloud<PointT>* ground,
-                                           pcl::PointCloud<PointT>* nonground)
+                                           pcl::PointCloud<PointT>* nonground,
+                                           float* time_taken)
 {
   // TODO: sensor height estimation is not implemented yet
   reset_buffers();
   ground->clear();
   nonground->clear();
-  to_CUDA(cloud_in, stream_);
+  to_CUDA(cloud_in);
+  // mark the start of processing
+  cudaEventRecord(cuEvent_start,stream_);
+
   bool ret = zone_model_->create_patches_gpu(cloud_in_d_, cloud_in->points.size(),
                                              num_pts_in_patch_d,  in_metas_d, metas_d,
                                              patch_offsets_d, num_total_sectors_,
@@ -252,6 +259,11 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
   extract_init_seeds_gpu();
   fit_regionwise_planes_gpu();
   finalize_groundness_gpu();
+
+  // mark the end of processing
+  cudaEventRecord(cuEvent_stop,stream_);
+  cudaEventSynchronize(cuEvent_stop);
+  cudaEventElapsedTime(time_taken, cuEvent_start, cuEvent_stop);
   to_pcl(ground,nonground);
 }
 

@@ -9,7 +9,7 @@ if (VIZ)
 endif (VIZ)
 
 add_compile_options(-std=c++17)
-set(CMAKE_BUILD_TYPE "Debug")
+set(CMAKE_BUILD_TYPE "RelWithDebInfo")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -139,10 +139,11 @@ class PatchWorkGPU {
   void reset_buffers(cudaStream_t stream=nullptr);
   void estimate_ground(pcl::PointCloud<PointT>* cloud_in,
                        pcl::PointCloud<PointT>* ground,
-                       pcl::PointCloud<PointT>* nonground);
+                       pcl::PointCloud<PointT>* nonground,
+                       float* time_taken);
   void init_cuda();
   void setup_cusolver();
-  void to_CUDA( pcl::PointCloud<PointT>* pc, cudaStream_t stream=0);
+  void to_CUDA( pcl::PointCloud<PointT>* pc);
   void extract_init_seeds_gpu();
   void set_cnst_mem();
   void fit_regionwise_planes_gpu();
@@ -209,6 +210,8 @@ class PatchWorkGPU {
   cudaStream_t stream_{nullptr};
   cudaStream_t streamd2h_{nullptr};
   cudaStream_t streamh2d_{nullptr};
+
+  cudaEvent_t cuEvent_start, cuEvent_stop;
 
  private:
   long int max_pts_in_cld_{300000};

@@ -90,21 +90,25 @@ int main(int argc, char **argv) {
 
   cout << "Target data: " << data_path << endl;
   KittiLoader loader(data_path);
+  uint cnt=0;
+  float cum_time{0};
 
   int N = loader.size();
   for (int n = max(0, start_frame); n < min(N, end_frame); ++n) {
     pcl::PointCloud<PointType> pc_curr;
     pcl::PointCloud<PointType> pc_ground;
     pcl::PointCloud<PointType> pc_nonground;
+    float time_taken{0};
 
     loader.get_cloud(n, pc_curr);
     CloudPublisher.publish(cloud2msg(pc_curr, "map"));
 
     PatchworkGroundSegGPU->reset_buffers();
-    PatchworkGroundSegGPU->estimate_ground(&pc_curr, &pc_ground, &pc_nonground);
+    PatchworkGroundSegGPU->estimate_ground(&pc_curr, &pc_ground, &pc_nonground, &time_taken);
     GroundPublisher.publish(cloud2msg(pc_ground, "map"));
     NonGroundPublisher.publish(cloud2msg(pc_nonground, "map"));
-
+    cum_time += time_taken;
+    cnt++;
 #ifdef VIZ
     patch_pc.reserve(pc_curr.size());
     seed_pc.reserve(pc_curr.size());
@@ -115,11 +119,12 @@ int main(int argc, char **argv) {
     patch_pc.clear();
 #endif
 
-    std::cout<<"frame idx: "<<n<<std::endl;
+    std::cout<<"frame idx: "<<n<< " time taken: " <<time_taken<< std::endl;
 
     while (std::cin.get() != ' ') {
       // Wait for space bar input
     }
   }
+  std::cout << "Mean runtime: " << (cum_time/cnt) <<"ms" << std::endl;
   return 0;
 }

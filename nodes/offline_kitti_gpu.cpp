@@ -130,8 +130,8 @@ int main(int argc, char **argv) {
     pcl::PointCloud<PointType> pc_ground;
     pcl::PointCloud<PointType> pc_non_ground;
 
-    static double time_taken{0.0};
-    PatchworkGroundSeg->estimate_ground(&pc_curr, &pc_ground, &pc_non_ground);
+    static float time_taken{0.0};
+    PatchworkGroundSeg->estimate_ground(&pc_curr, &pc_ground, &pc_non_ground, &time_taken);
 
     // Estimation
     double precision, recall, precision_naive, recall_naive;
