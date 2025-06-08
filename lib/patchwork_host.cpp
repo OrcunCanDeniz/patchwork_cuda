@@ -141,8 +141,6 @@ void PatchWorkGPU<PointT>::init_cuda()
   // cusolver buffers
   CUDA_CHECK(cudaMalloc((void**)&eigen_vals_d, num_total_sectors_ * 3 * sizeof(double)));
   CUDA_CHECK(cudaMalloc((void**)&eig_info_d, num_total_sectors_ * sizeof(int)));
-  eig_info_h.resize(num_total_sectors_);
-  CUDA_CHECK(cudaMallocHost((void**)&eig_info_h, num_total_sectors_ * sizeof(int)));
 
   CUDA_CHECK(cudaMallocHost((void**)&num_patched_pts_h, sizeof(uint)));
 

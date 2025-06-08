@@ -240,7 +240,6 @@ class PatchWorkGPU {
   double* eigen_vals_d{nullptr};
   double* work_d{nullptr};
   int* eig_info_d{nullptr};
-  std::vector<int> eig_info_h;
 
   uint num_total_sectors_{0};
   uint last_sector_1st_ring_{0};
