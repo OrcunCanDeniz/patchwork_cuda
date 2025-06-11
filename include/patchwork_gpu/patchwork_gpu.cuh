@@ -236,11 +236,11 @@ class PatchWorkGPU {
   uint* patch_offsets_h{nullptr};  // For counting points in each patch
 
   PCAFeature* pca_features_d{nullptr};
-  double* cov_mats_d{nullptr};
+  float* cov_mats_d{nullptr};
   cusolverDnHandle_t cusolverH = NULL;
   syevjInfo_t syevj_params = NULL;
-  double* eigen_vals_d{nullptr};
-  double* work_d{nullptr};
+  float* eigen_vals_d{nullptr};
+  float* work_d{nullptr};
   int* eig_info_d{nullptr};
 
   uint num_total_sectors_{0};

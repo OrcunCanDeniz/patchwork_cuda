@@ -79,9 +79,13 @@ cuda_add_library(
         OPTIONS ${CUDA_NVCC_FLAGS}
 )
 
-cuda_add_library(patchwork_gpu lib/patchwork_kernels.cu)
+cuda_add_library(patchwork_gpu lib/patchwork_kernels.cu
+        OPTIONS ${CUDA_NVCC_FLAGS}
+)
 
-cuda_add_library(patchwork_host lib/patchwork_host.cpp)
+cuda_add_library(patchwork_host lib/patchwork_host.cpp
+        OPTIONS ${CUDA_NVCC_FLAGS}
+)
 target_link_libraries(patchwork_host
         ${catkin_LIBRARIES}
         ${CUDA_cusolver_LIBRARY}
@@ -97,6 +101,14 @@ target_link_libraries(patchwork_workbench
         zone_models_gpu
         patchwork_host)
 
+add_executable(offline_kitti_gpu nodes/offline_kitti_gpu.cpp)
+target_link_libraries(offline_kitti_gpu
+        ${catkin_LIBRARIES}
+        ${PCL_LIBRARIES}
+        zone_models_gpu
+        patchwork_host
+        stdc++fs)
+
 add_executable(ros_kitti nodes/ros_kitti.cpp)
 target_link_libraries(ros_kitti ${catkin_LIBRARIES} ${PCL_LIBRARIES} TBB::tbb)
 add_dependencies(ros_kitti patchwork_generate_messages_cpp)
@@ -109,8 +121,7 @@ add_executable(pub_for_legoloam nodes/pub_for_legoloam.cpp)
 target_link_libraries(pub_for_legoloam ${catkin_LIBRARIES} ${PCL_LIBRARIES} TBB::tbb)
 add_dependencies(pub_for_legoloam patchwork_generate_messages_cpp)
 
-add_executable(offline_kitti nodes/offline_kitti.cpp
-        include/patchwork_gpu/patchwork_gpu.cuh)
+add_executable(offline_kitti nodes/offline_kitti.cpp)
 target_link_libraries(offline_kitti ${catkin_LIBRARIES} ${PCL_LIBRARIES} stdc++fs TBB::tbb)
 add_dependencies(offline_kitti patchwork_generate_messages_cpp)
 
