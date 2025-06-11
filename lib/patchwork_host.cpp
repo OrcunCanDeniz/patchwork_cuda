@@ -138,11 +138,11 @@ void PatchWorkGPU<PointT>::init_cuda()
   CUDA_CHECK(cudaMalloc((void**)&in_metas_d, sizeof(PointMeta) * max_pts_in_cld_));
   CUDA_CHECK(cudaMalloc((void**)&metas_d, sizeof(PointMeta) * max_pts_in_cld_));
 
-  CUDA_CHECK(cudaMalloc((void**)&cov_mats_d, sizeof(double)* 3 * 3 * num_total_sectors_));
+  CUDA_CHECK(cudaMalloc((void**)&cov_mats_d, sizeof(float)* 3 * 3 * num_total_sectors_));
   CUDA_CHECK(cudaMalloc((void**)&pca_features_d, num_total_sectors_ * sizeof(PCAFeature)));
 
   // cusolver buffers
-  CUDA_CHECK(cudaMalloc((void**)&eigen_vals_d, num_total_sectors_ * 3 * sizeof(double)));
+  CUDA_CHECK(cudaMalloc((void**)&eigen_vals_d, num_total_sectors_ * 3 * sizeof(float)));
   CUDA_CHECK(cudaMalloc((void**)&eig_info_d, num_total_sectors_ * sizeof(int)));
 
   CUDA_CHECK(cudaMallocHost((void**)&num_patched_pts_h, sizeof(uint)));
@@ -166,7 +166,7 @@ void PatchWorkGPU<PointT>::setup_cusolver()
   CUSOLVER_CHECK(cusolverDnSetStream(cusolverH, stream_));
   CUSOLVER_CHECK(cusolverDnCreateSyevjInfo(&syevj_params));
   CUSOLVER_CHECK(cusolverDnXsyevjSetTolerance(syevj_params, 1.e-7));
-  CUSOLVER_CHECK(cusolverDnXsyevjSetMaxSweeps(syevj_params, 100));
+  CUSOLVER_CHECK(cusolverDnXsyevjSetMaxSweeps(syevj_params, 50));
   CUSOLVER_CHECK(cusolverDnXsyevjSetSortEig(syevj_params, 1));
 }
 
@@ -180,9 +180,9 @@ void PatchWorkGPU<PointT>::reset_buffers(cudaStream_t stream)
   CUDA_CHECK(cudaMemsetAsync(num_pts_in_patch_d, 0, num_pts_in_patch_size, stream));
   CUDA_CHECK(cudaMemsetAsync(patch_states_d, 0, sizeof(PatchState) * num_total_sectors_, stream));
   CUDA_CHECK(cudaMemsetAsync(patch_offsets_d, 0, num_pts_in_patch_size+ sizeof(uint), stream));
-  CUDA_CHECK(cudaMemsetAsync(cov_mats_d, 0, sizeof(double) * 3 * 3 * num_total_sectors_, stream));
+  CUDA_CHECK(cudaMemsetAsync(cov_mats_d, 0, sizeof(float) * 3 * 3 * num_total_sectors_, stream));
   CUDA_CHECK(cudaMemsetAsync(pca_features_d, 0, num_total_sectors_ * sizeof(PCAFeature), stream));
-  CUDA_CHECK(cudaMemsetAsync(eigen_vals_d, 0, num_total_sectors_ * 3 * sizeof(double), stream));
+  CUDA_CHECK(cudaMemsetAsync(eigen_vals_d, 0, num_total_sectors_ * 3 * sizeof(float), stream));
   CUDA_CHECK(cudaMemsetAsync(eig_info_d, 0, num_total_sectors_ * sizeof(int), stream));
   *num_patched_pts_h = 0;
 }
