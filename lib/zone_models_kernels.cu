@@ -134,6 +134,7 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
                                                           uint num_total_sectors,
                                                           PointT* patches_d,
                                                           uint& num_patched_pts_h,
+                                                          float* sorted_z_d,
                                                           cudaStream_t& stream)
 {
   if (num_pc_pts > max_num_pts) {
@@ -214,7 +215,7 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
   static size_t sort_query_bytes = 0;
   cub::DeviceSegmentedSort::SortPairs(
                                       nullptr, sort_query_bytes,
-                                      z_keys_d_, z_keys_out_d_,
+                                      z_keys_d_, sorted_z_d,
                                       raw_perm_idx, sorted_perm_idx,
                                       num_patched_pts_h, num_total_sectors,
                                       offsets_d, offsets_d + 1, stream);
@@ -230,7 +231,7 @@ bool ConcentricZoneModelGPU<PointT>::create_patches_gpu(PointT* cloud_in_d, int 
   // sort pts within patches by z. only get idx mapping
   cub::DeviceSegmentedSort::SortPairs(
       cub_sort_tmp_d, cub_sort_tmp_bytes,
-      z_keys_d_, z_keys_out_d_, raw_perm_idx, sorted_perm_idx,
+      z_keys_d_, sorted_z_d, raw_perm_idx, sorted_perm_idx,
       num_patched_pts_h, num_total_sectors, offsets_d, offsets_d + 1, stream);
 
   dim3 perm_threads(num_threads);

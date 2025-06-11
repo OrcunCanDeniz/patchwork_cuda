@@ -29,7 +29,6 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
    size_t cub_dev_scan_sum_tmp_bytes = 0;
    std::vector<uint> num_pts_per_patch_h;
    float* z_keys_d_ = nullptr;
-   float* z_keys_out_d_ = nullptr;
    PointT* unsorted_patches_d_ = nullptr;
    void  *cub_sort_tmp_d = nullptr;
    size_t cub_sort_tmp_bytes = 0;
@@ -59,7 +58,6 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
       cudaStreamCreateWithFlags(&czm_stream_, cudaStreamNonBlocking);
       set_cnst_mem();
       CUDA_CHECK(cudaMalloc((void**)&z_keys_d_, max_num_pts * sizeof(float)));
-      CUDA_CHECK(cudaMalloc((void**)&z_keys_out_d_, max_num_pts * sizeof(float)));
       CUDA_CHECK(cudaMalloc((void**)&unsorted_patches_d_, max_num_pts * sizeof(PointT)));
       CUDA_CHECK(cudaMalloc((void**)&metas_interm, max_num_pts * sizeof(PointMeta)));
       CUDA_CHECK(cudaMalloc((void**)&raw_perm_idx, max_num_pts * sizeof(uint)))
@@ -96,7 +94,6 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
   {
     cudaFree(cub_dev_scan_sum_tmp_);
     cudaFree(z_keys_d_);
-    cudaFree(z_keys_out_d_);
     cudaFree(unsorted_patches_d_);
   }
 
@@ -112,6 +109,7 @@ class ConcentricZoneModelGPU: public ConcentricZoneModel
                           uint num_total_sectors,
                           PointT* patches_d,
                           uint& num_patched_pts_h,
+                          float* sorted_z_d,
                           cudaStream_t& stream);
 };
 

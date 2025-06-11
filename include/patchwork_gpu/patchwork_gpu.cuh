@@ -183,6 +183,10 @@ class PatchWorkGPU {
 
     if (work_d) cudaFree(work_d);
 
+    if (patch_seed_thr_d) cudaFree(patch_seed_thr_d);
+
+    if (patched_z_d) cudaFree(patched_z_d);
+
     CUSOLVER_CHECK(cusolverDnDestroySyevjInfo(syevj_params));
     CUSOLVER_CHECK(cusolverDnDestroy(cusolverH));
 
@@ -234,6 +238,9 @@ class PatchWorkGPU {
 
   uint* patch_offsets_d{nullptr};  // For counting points in each patch
   uint* patch_offsets_h{nullptr};  // For counting points in each patch
+
+  float* patch_seed_thr_d{nullptr};
+  float* patched_z_d{nullptr};
 
   PCAFeature* pca_features_d{nullptr};
   float* cov_mats_d{nullptr};

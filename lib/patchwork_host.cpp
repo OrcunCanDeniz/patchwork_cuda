@@ -145,6 +145,9 @@ void PatchWorkGPU<PointT>::init_cuda()
   CUDA_CHECK(cudaMalloc((void**)&eigen_vals_d, num_total_sectors_ * 3 * sizeof(float)));
   CUDA_CHECK(cudaMalloc((void**)&eig_info_d, num_total_sectors_ * sizeof(int)));
 
+  CUDA_CHECK(cudaMalloc((void**)&patch_seed_thr_d, num_total_sectors_ * sizeof(float)));
+  CUDA_CHECK(cudaMalloc((void**)&patched_z_d, max_pts_in_cld_ * sizeof(float)));
+
   CUDA_CHECK(cudaMallocHost((void**)&num_patched_pts_h, sizeof(uint)));
 
   CUDA_CHECK(cudaMallocHost((void**)&packed_pts_out_h, sizeof(PointT) * max_pts_in_cld_));
@@ -184,6 +187,8 @@ void PatchWorkGPU<PointT>::reset_buffers(cudaStream_t stream)
   CUDA_CHECK(cudaMemsetAsync(pca_features_d, 0, num_total_sectors_ * sizeof(PCAFeature), stream));
   CUDA_CHECK(cudaMemsetAsync(eigen_vals_d, 0, num_total_sectors_ * 3 * sizeof(float), stream));
   CUDA_CHECK(cudaMemsetAsync(eig_info_d, 0, num_total_sectors_ * sizeof(int), stream));
+  CUDA_CHECK(cudaMemsetAsync(patch_seed_thr_d, 0, num_total_sectors_ * sizeof(float), stream));
+  CUDA_CHECK(cudaMemsetAsync(patched_z_d, 0, max_pts_in_cld_ * sizeof(float), stream));
   *num_patched_pts_h = 0;
 }
 
@@ -242,7 +247,8 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
   bool ret = zone_model_->create_patches_gpu(cloud_in_d_, cloud_in->points.size(),
                                              num_pts_in_patch_d,  in_metas_d, metas_d,
                                              patch_offsets_d, num_total_sectors_,
-                                             patches_d, *num_patched_pts_h, stream_);
+                                             patches_d, *num_patched_pts_h,
+                                             patched_z_d, stream_);
   if(!ret)
   {
     throw std::runtime_error("Failed to launch create patches kernel.");

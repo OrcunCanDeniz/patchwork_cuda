@@ -6,7 +6,7 @@
 #include "cub/device/device_reduce.cuh"
 #include "cub/device/device_partition.cuh"
 
-#define NUM_THREADS_PER_PATCH 128
+#define NUM_THREADS_PER_PATCH 256
 #define WARP_SIZE 32
 #define FULL_MASK 0xffffffffu
 
@@ -38,15 +38,14 @@ void PatchWorkGPU<PointT>::set_cnst_mem()
 }
 
 // Single kernel version: one block per patch with parallel reduction in shared memory
-template<typename PointT>
 __global__ void lbr_seed_kernel(
-    const PointT* patches,
+    const float* pt_z,
     const uint* num_pts,
     const uint* offsets,
     const double close_zone_z_thresh,
-    const int max_ring_first,
-    const uint min_lpr_pts_thres,
-    PointMeta* metas)
+    const uint max_ring_first,
+    const int min_lpr_pts_thres,
+    float* thres_d)
 {
   const int patch_idx = blockIdx.x;
   const uint n = num_pts[patch_idx];
@@ -76,8 +75,8 @@ __global__ void lbr_seed_kernel(
 
     // each thread checks if its point is valid and hasn’t been counted before
     if (i < (int)n) {
-      float z = patches[offset + i].z;
-      bool flag = (!close_zone) || (z > close_zone_z_thresh);
+      float z = pt_z[offset + i];
+      const bool flag = (!close_zone) || (z > close_zone_z_thresh);
 
       if (flag && (iter_flag_sm[tid] == -1)) {
         // Mark this thread’s slot as “counted”
@@ -99,7 +98,7 @@ __global__ void lbr_seed_kernel(
   }
 
   // handle the case if we have more than enough pts
-  uint useful_pts_num = min(cum_cnt, (int)min_lpr_pts_thres);
+  const uint useful_pts_num = min(cum_cnt, (int)min_lpr_pts_thres);
    /*
     EDGE CASE: n>WARP_SIZE, in close ring threads; first 15 threads of warp couldnt find valid pts, remaining 17 threads found.
     We still need 3 more. in the next iter rest of the 15 threads finds valid points and loads into ShMem.
@@ -114,6 +113,7 @@ __global__ void lbr_seed_kernel(
   int used_cnt = 0;
   if (tid == 0) {
     for (int e = 0; e <= iter; ++e) {
+      // TODO : try to get rid of below loop with warp intrinsics
       for (int th = 0; th < WARP_SIZE; ++th) {
         if (used_cnt == (int)useful_pts_num) break;
         if (iter_flag_sm[th] == e) {
@@ -127,17 +127,24 @@ __global__ void lbr_seed_kernel(
 
   sum_z   = __shfl_sync(FULL_MASK, sum_z,   0);
   used_cnt = __shfl_sync(FULL_MASK, used_cnt, 0);
+  const bool patch_non_empty = (used_cnt > 0);
 
-  float threshold = cnst_lbr_margin;
-  if (used_cnt > 0) {
-    threshold += (sum_z / used_cnt) ;
-  }
+  const float threshold = cnst_lbr_margin + (patch_non_empty * (sum_z / used_cnt));
+  thres_d[patch_idx] = threshold;
+}
 
-  for (uint i = tid; i < n; i += WARP_SIZE) {
-    size_t idx = offset + i;
-    metas[idx].ground = (patches[idx].z < threshold);
-//    metas[idx].lbr    = threshold; // only to be aable to vis. later
-  }
+__global__ void seed_mark_kernel(
+    const float* z_buffer_d,
+    const float* thres_d,
+    PointMeta* metas_d,
+    const uint num_patched_pts)
+{
+  const uint pt_idx = blockDim.x * blockIdx.x + threadIdx.x;
+  if ( pt_idx >= num_patched_pts) return;
+  const auto patch_idx = metas_d[pt_idx].lin_sec_idx;
+  const float seed_thr = thres_d[patch_idx];
+  const float pt_z = z_buffer_d[pt_idx];
+  metas_d[pt_idx].ground = pt_z < seed_thr;
 }
 
 template <typename PointT>
@@ -149,17 +156,22 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu()
   // for patches in first zone, we only consider the points that are above the sensor height
   // for patches in other zones, all points are used to calculate mean height in patch
   // variable num of threads per patch may be useful.
-  dim3 blocks(num_total_sectors_);
-  size_t sm_size = WARP_SIZE * (sizeof(float) + sizeof(int));
-  lbr_seed_kernel<<<blocks, WARP_SIZE, sm_size, stream_>>>(
-                                                    patches_d,
+  const size_t sm_size = WARP_SIZE * (sizeof(float) + sizeof(int));
+  lbr_seed_kernel<<<num_total_sectors_, WARP_SIZE, sm_size, stream_>>>(
+                                                    patched_z_d,
                                                     num_pts_in_patch_d,
                                                     patch_offsets_d,
                                                     lowest_h_margin_in_close_zone,
                                                     last_sector_1st_ring_,
                                                     num_lpr_,
-                                                    metas_d
+                                                    patch_seed_thr_d
                                                   );
+
+
+  const dim3 blocks(divup(*num_patched_pts_h, NUM_THREADS_PER_PATCH));
+  seed_mark_kernel<<<blocks,NUM_THREADS_PER_PATCH,0, stream_ >>>(patched_z_d, patch_seed_thr_d,
+                                                       metas_d, *num_patched_pts_h);
+
 }
 
 template<typename PointT>
@@ -269,9 +281,9 @@ __global__ void set_patch_pca_features(float* eig_vects,
   // 1st vect is the one with least eig val. thus plane normal.
   float* eig_vectors_patch = &eig_vects[patch_idx * 9];
   // eig vectors are stored col-major
-  float vx = eig_vectors_patch[0];
-  float vy = eig_vectors_patch[1];
-  float vz = eig_vectors_patch[2];
+  const float vx = eig_vectors_patch[0];
+  const float vy = eig_vectors_patch[1];
+  const float vz = eig_vectors_patch[2];
 
   int inv_vect = (vz < 0.0f) ? -1 : 1;
   pca_feature.normal_ = make_float3( vx * inv_vect,
