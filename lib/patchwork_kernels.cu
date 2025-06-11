@@ -89,19 +89,13 @@ __global__ void lbr_seed_kernel(
 
     unsigned int mask = __ballot_sync(FULL_MASK, local_flag);
     int this_iter_cnt = __popc(mask);
-
-    if (tid == 0) {
-      cum_cnt += this_iter_cnt;
-    }
-
-    // broadcast cum_cnt to all threads in warp
-    cum_cnt = __shfl_sync(FULL_MASK, cum_cnt, 0);
+    //cum_cnt computed the same way in each thread
+    cum_cnt += this_iter_cnt;
 
     // do we have enough pts
     if (cum_cnt >= (int)min_lpr_pts_thres) {
       break;
     }
-    __syncthreads();
   }
 
   // handle the case if we have more than enough pts
