@@ -9,6 +9,7 @@
 #define NUM_THREADS_PER_PATCH 256
 #define WARP_SIZE 32
 #define FULL_MASK 0xffffffffu
+#define COV_FT_CNT 10
 
 __device__ __constant__ int cnst_num_sectors_per_ring[256];
 __device__ __constant__ std::size_t cnst_num_sectors_per_ring_size;
@@ -183,23 +184,15 @@ __global__ void compute_patchwise_cov_mat (const PointT* patches,
                                             PCAFeature* pca_features
                                           )
 {
-  static constexpr size_t feat_cnt= 10;
-  extern __shared__ double sm_stats[]; // xx, xy, xz, yy, yz, zz, x, y, z count
+  float local_stats[10]= {0}; // xx, xy, xz, yy, yz, zz, x, y, z count
   const uint patch_idx = blockIdx.x;
   const uint tid = threadIdx.x;
+  const uint lane_id = tid & (WARP_SIZE-1);
   const uint n = num_pts_per_patch[patch_idx];
   const PointT* patch_start = &patches[offsets[patch_idx]];
   const PointMeta* patch_metas = &metas[offsets[patch_idx]];
-  float cov_mat[9]; // COL-MAJOR
 
-  #pragma unroll
-  for(size_t i=0; i<feat_cnt; ++i) {
-    sm_stats[tid * feat_cnt + i] = 0.0;
-  }
-  __syncthreads();
-
-  double* local_stats = &sm_stats[tid * feat_cnt];
-
+  // each thread accumulate to its registers
   for (size_t i=tid; i<n; i+=blockDim.x) {
     const bool is_ground = patch_metas[i].ground;
     const PointT& pt = patch_start[i];
@@ -215,46 +208,76 @@ __global__ void compute_patchwise_cov_mat (const PointT* patches,
     local_stats[8] += pt.z * is_ground;
     local_stats[9] += is_ground;
   }
+  __syncthreads();
 
-  __syncthreads(); // local_stats is actuall a part of shared mem.
-  for (size_t slice=blockDim.x/2; slice>0; slice>>=1) {
-    if (tid < slice) {
-      for(size_t stat_idx=0; stat_idx<feat_cnt; ++stat_idx) {
-        sm_stats[tid * feat_cnt + stat_idx] += sm_stats[(tid + slice) * feat_cnt + stat_idx];
-      }
+  // combine warps' threads' results
+  for (size_t offset=WARP_SIZE/2; offset>0; offset>>=1) {
+    #pragma unroll
+    for(int f=0; f<COV_FT_CNT; ++f){
+      local_stats[f] += __shfl_down_sync(FULL_MASK, local_stats[f], offset);
     }
-    __syncthreads();
   }
 
-  if(tid == 0)
+  constexpr uint num_warps = NUM_THREADS_PER_PATCH/WARP_SIZE;
+  const uint warp_id = tid >> 5; // tid/32 = tid/WARP_SIZE
+  __shared__ float warp_results[num_warps * COV_FT_CNT];
+  float* this_warp_res = &warp_results[warp_id*COV_FT_CNT];
+
+  // each warp's leader thread loads warp results to sm
+  if (lane_id == 0)
   {
-    const double count = max(sm_stats[9], 1.0);// avoid division by zero
-    const double denom_cov = (count > 1.0) ? (count - 1.0) : 1.0;
-    const double denom_mean = (count >= 1.0) ? (count) : 1.0;
-    const double inv_count_cov = 1.0 / denom_cov;
-    const double inv_count = 1.0 / denom_mean;
-    const double x_mean = sm_stats[6] * inv_count;
-    const double y_mean = sm_stats[7] * inv_count;
-    const double z_mean = sm_stats[8] * inv_count;
-
-    const auto xx = static_cast<float>((sm_stats[0] - count* x_mean * x_mean) * inv_count_cov);
-    const auto xy = static_cast<float>((sm_stats[1] - count* x_mean * y_mean) * inv_count_cov);
-    const auto xz = static_cast<float>((sm_stats[2] - count* x_mean * z_mean) * inv_count_cov);
-    const auto yy = static_cast<float>((sm_stats[3] - count* y_mean * y_mean) * inv_count_cov);
-    const auto yz = static_cast<float>((sm_stats[4] - count* y_mean * z_mean) * inv_count_cov);
-    const auto zz = static_cast<float>((sm_stats[5] - count* z_mean * z_mean) * inv_count_cov);
-
-    cov_mat[0] = xx; cov_mat[3] = xy; cov_mat[6] = xz;
-    cov_mat[1] = xy; cov_mat[4] = yy; cov_mat[7] = yz;
-    cov_mat[2] = xz; cov_mat[5] = yz; cov_mat[8] = zz;
-
-    // do not care about patches with insufficient points, we'll handle those later
-
     #pragma unroll
-    for(int i = 0; i < 9; ++i) {
-      cov_out[patch_idx*9 + i] = cov_mat[i];
+    for(int f=0; f<COV_FT_CNT; ++f) this_warp_res[f] = local_stats[f];
+  }
+  __syncthreads();
+
+  if(warp_id==0) {
+    float final_warp_local[COV_FT_CNT];
+    // each thread in final warp loads from sm to registers
+    if (lane_id < num_warps) {
+      #pragma unroll
+      for (int f = 0; f < COV_FT_CNT; ++f) {
+        final_warp_local[f] = warp_results[lane_id * COV_FT_CNT + f];
+      }
+    } else {
+      #pragma unroll
+      for (int f = 0; f < COV_FT_CNT; ++f) final_warp_local[f] = 0;  // set empty warps to zero
     }
-    pca_features[patch_idx].mean_ = make_float3(x_mean, y_mean, z_mean);
+
+    // leader warp reduce results of multiple warps in block
+    for (size_t offset = num_warps >> 1; offset > 0; offset >>= 1) {
+      #pragma unroll
+      for (int f = 0; f < COV_FT_CNT; ++f) {
+        final_warp_local[f] += __shfl_down_sync(FULL_MASK, final_warp_local[f], offset);
+      }
+    }
+
+    if (lane_id == 0) {
+      const float count = max(final_warp_local[9], 1.0);  // avoid division by zero
+      const float denom_cov = (count > 1.0) ? (count - 1.0) : 1.0;
+      const float denom_mean = (count >= 1.0) ? (count) : 1.0;
+      const float inv_count_cov = 1.0 / denom_cov;
+      const float inv_count = 1.0 / denom_mean;
+      const float x_mean = final_warp_local[6] * inv_count;
+      const float y_mean = final_warp_local[7] * inv_count;
+      const float z_mean = final_warp_local[8] * inv_count;
+
+      const float xx = (final_warp_local[0] - count * x_mean * x_mean) * inv_count_cov;
+      const float xy = (final_warp_local[1] - count * x_mean * y_mean) * inv_count_cov;
+      const float xz = (final_warp_local[2] - count * x_mean * z_mean) * inv_count_cov;
+      const float yy = (final_warp_local[3] - count * y_mean * y_mean) * inv_count_cov;
+      const float yz = (final_warp_local[4] - count * y_mean * z_mean) * inv_count_cov;
+      const float zz = (final_warp_local[5] - count * z_mean * z_mean) * inv_count_cov;
+
+      float* co = cov_out + patch_idx*9;
+      co[0]=xx; co[1]=xy; co[2]=xz;
+      co[3]=xy; co[4]=yy; co[5]=yz;
+      co[6]=xz; co[7]=yz; co[8]=zz;
+
+      // do not care about patches with insufficient points, we'll handle those later
+
+      pca_features[patch_idx].mean_ = make_float3(x_mean, y_mean, z_mean);
+    }
   }
 }
 
@@ -329,8 +352,7 @@ void PatchWorkGPU<PointT>::fit_regionwise_planes_gpu()
 
   for(size_t i=0; i<num_iter_; ++i) {
     // compute cov matrices for each patch
-    const size_t sm_size = NUM_THREADS_PER_PATCH * 10 * sizeof(double);
-    compute_patchwise_cov_mat<<<num_total_sectors_, NUM_THREADS_PER_PATCH, sm_size, stream_>>>(
+    compute_patchwise_cov_mat<<<num_total_sectors_, NUM_THREADS_PER_PATCH, 0, stream_>>>(
         patches_d, num_pts_in_patch_d, patch_offsets_d, cov_mats_d, metas_d, pca_features_d);
 
     // run PCA on each patch -> eigenvector w/ least eig, val is the normal
