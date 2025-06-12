@@ -1,4 +1,4 @@
-## Patchwork CUDA [WIP]
+## Patchwork CUDA
 
 This repository contains the CUDA implementation of Patchwork. 
 Official implementation and research details
@@ -12,6 +12,26 @@ Tested on:
 - Ubuntu 20.04
 - CUDA 11.8
 - ROS Noetic
+- NVIDIA GeForce RTX 3080 Ti Laptop 
+- 12th Gen Intel i7-12700H
+
+**~6.2x faster than CPU implementation.**
+
+**Official TBB Parallelized Implementation**
+
+![Official TBB Implementation](./img/pw_tbb.png)
+
+**CUDA Implementation**
+```
+cd <YOUR_CATKIN_WS>
+catkin build patchwork_cuda
+source devel/setup.bash
+roslaunch patchwork_cuda offline_kitti_gpu.launch
+```
+
+![My CUDA Implementation](./img/pw_cuda.png)
+
+
 
 ### Prepare Offline KITTI dataset
 
