@@ -153,11 +153,6 @@ void PatchWorkGPU<PointT>::init_cuda()
   CUDA_CHECK(cudaMallocHost((void**)&packed_pts_out_h, sizeof(PointT) * max_pts_in_cld_));
   CUDA_CHECK(cudaMallocHost((void**)&metas_h, sizeof(PointMeta) * max_pts_in_cld_));
 
-#ifdef VIZ
-  CUDA_CHECK(cudaMallocHost((void**)&num_pts_in_patch_h, num_pts_in_patch_size));
-  CUDA_CHECK(cudaMallocHost((void**)&patches_h, patches_size));
-#endif // VIZ
-
   setup_cusolver();
   set_cnst_mem();
   reset_buffers();
@@ -266,59 +261,6 @@ void PatchWorkGPU<PointT>::estimate_ground(pcl::PointCloud<PointT>* cloud_in,
   cudaEventElapsedTime(time_taken, cuEvent_start, cuEvent_stop);
   to_pcl(ground,nonground);
 }
-
-
-# ifdef VIZ
-template<typename PointT>
-void PatchWorkGPU<PointT>::viz_points( pcl::PointCloud<PointT>* patched_pc,
-                                      pcl::PointCloud<PointT>* seed_pc)
-{
-  CUDA_CHECK(cudaMemcpyAsync(patches_h, patches_d, patches_size,
-                             cudaMemcpyDeviceToHost, streamd2h_));
-  CUDA_CHECK(cudaMemcpyAsync(num_pts_in_patch_h, num_pts_in_patch_d, num_pts_in_patch_size,
-                             cudaMemcpyDeviceToHost, streamd2h_));
-  CUDA_CHECK(cudaMemcpyAsync(patch_offsets_h, patch_offsets_d, num_pts_in_patch_size,
-                             cudaMemcpyDeviceToHost, streamd2h_));
-  cudaStreamSynchronize(streamd2h_);
-  uint32_t num_patched_pts {0};
-  static auto& color_map = zone_model_->color_map;
-  for(int ring_idx=0; ring_idx<zone_model_->num_total_rings_; ring_idx++)
-  {
-    auto ring_offset = std::accumulate(zone_model_->num_sectors_per_ring_.begin(),
-                                       zone_model_->num_sectors_per_ring_.begin() + ring_idx , 0);
-    for(int sector_idx=0; sector_idx< zone_model_->num_sectors_per_ring_[ring_idx]; sector_idx++)
-    {
-      auto patch_numel_offset =  ring_offset + sector_idx;
-      uint num_pts = *(num_pts_in_patch_h + patch_numel_offset);
-
-      for(std::size_t pt_idx=0; pt_idx<num_pts; pt_idx++)
-      {
-        std::size_t lin_patch_offset = static_cast<std::size_t>(patch_offsets_h[patch_numel_offset]) + pt_idx;
-        PointT& pt_loc = patches_h[lin_patch_offset];
-        pt_loc.intensity = color_map[ring_idx * zone_model_->max_num_sectors_ + sector_idx];
-        patched_pc->points.push_back(pt_loc); // Add a duplicate point with zero intensity
-
-        if (metas_h[lin_patch_offset].ground) {
-          // encode ring,sector info as intensity to be colorized when visualized
-          PointT tmp_pt;
-          tmp_pt.x = pt_loc.x;
-          tmp_pt.y = pt_loc.y;
-          tmp_pt.z = pt_loc.z;
-          tmp_pt.intensity = 100;
-          seed_pc->points.push_back(tmp_pt);
-          num_patched_pts++;
-//          PointT lbr_pt;
-//          lbr_pt.x = pt_loc.x;
-//          lbr_pt.y = pt_loc.y;
-//          lbr_pt.z = metas_h[lin_patch_offset].lbr;
-//          lbr_pt.intensity = 0; // zero intensity for the LBR point
-//          seed_pc->points.push_back(lbr_pt);
-        }
-      }
-    }
-  }
-}
-#endif
 
 template class PatchWorkGPU<PointXYZILID>;
 

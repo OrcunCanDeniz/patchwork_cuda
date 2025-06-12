@@ -111,6 +111,18 @@ class PatchWorkGPU {
 
   std::string frame_patchwork = "map";
 
+  // ATAT parameters
+  bool ATAT_ON_{false};
+  double max_r_for_ATAT_{5.0};
+  int num_sectors_for_ATAT_{20};
+  double noise_bound_{0.2};
+
+  // Visualization parameters
+  bool visualize_{true};
+  ros::Publisher PlanePub;
+  ros::Publisher RevertedCloudPub;
+  ros::Publisher RejectedCloudPub;
+
   template <typename T>
   bool condParam(ros::NodeHandle *nh,
                  const std::string &param_name,
@@ -189,23 +201,6 @@ class PatchWorkGPU {
 
     CUSOLVER_CHECK(cusolverDnDestroySyevjInfo(syevj_params));
     CUSOLVER_CHECK(cusolverDnDestroy(cusolverH));
-
-#ifdef VIZ
-    if (patches_h) {
-      cudaFreeHost(patches_h);
-      patches_h = nullptr;
-    }
-
-    if (num_pts_in_patch_h) {
-      cudaFreeHost(num_pts_in_patch_h);
-        num_pts_in_patch_h = nullptr;
-    }
-
-    if (metas_h) {
-      cudaFreeHost(metas_h);
-      metas_h = nullptr;
-    }
-#endif // VIZ
   }
 
   std::unique_ptr<ConcentricZoneModelGPU<PointT>> zone_model_;
@@ -221,7 +216,6 @@ class PatchWorkGPU {
   PointT *cloud_in_d_{nullptr};
 
   PointT* patches_d;
-  PointT* patches_h{nullptr};
   std::size_t patches_size{0};
 
   PointMeta* in_metas_d{nullptr};
@@ -229,7 +223,6 @@ class PatchWorkGPU {
   PointMeta* metas_h{nullptr};
 
   uint* num_pts_in_patch_d;
-  uint* num_pts_in_patch_h{nullptr};
   std::size_t num_pts_in_patch_size{0};
   uint* num_patched_pts_h{nullptr};
   PointT* packed_pts_out_h{nullptr}; // first ground_pts_num elems is ground points
@@ -253,12 +246,6 @@ class PatchWorkGPU {
   uint num_total_sectors_{0};
   uint last_sector_1st_ring_{0};
 
-  // For ATAT (All-Terrain Automatic heighT estimator)
-  bool ATAT_ON_;
-  double noise_bound_;
-  double max_r_for_ATAT_;
-  int num_sectors_for_ATAT_;
-
   int num_iter_;
   int num_lpr_;
   int num_min_pts_;
@@ -275,28 +262,19 @@ class PatchWorkGPU {
   double adaptive_seed_selection_margin_;
 
   bool verbose_;
-  bool initialized_ = true;
 
   // For global threshold
   bool using_global_thr_;
   double global_elevation_thr_;
 
-  // For visualization
-  bool visualize_;
 
   std::string sensor_model_;
-  vector<std::pair<int, int>> patch_indices_;  // For multi-threading. {ring_idx, sector_idx}
 
   vector<double> sector_sizes_;
   vector<double> ring_sizes_;
   vector<double> min_ranges_;
   vector<double> elevation_thr_;
   vector<double> flatness_thr_;
-
-  jsk_recognition_msgs::PolygonArray poly_list_;
-
-  ros::Publisher PlanePub, RevertedCloudPub, RejectedCloudPub;
-  pcl::PointCloud<PointT> reverted_points_by_flatness_, rejected_points_by_elevation_;
 };
 
 
