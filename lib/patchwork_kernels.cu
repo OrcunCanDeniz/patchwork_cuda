@@ -37,14 +37,13 @@ void PatchWorkGPU<PointT>::set_cnst_mem()
   cudaMemcpyToSymbol(cnst_min_num_pts_thr, &num_min_pts_, sizeof(int));
 }
 
-// Single kernel version: one block per patch with parallel reduction in shared memory
 __global__ void lbr_seed_kernel(
     const float* pt_z,
     const uint* num_pts,
     const uint* offsets,
     const double close_zone_z_thresh,
     const uint max_ring_first,
-    const int min_lpr_pts_thres,
+    const int max_lpr_pts_thres,
     float* thres_d)
 {
   const int patch_idx = blockIdx.x;
@@ -55,13 +54,9 @@ __global__ void lbr_seed_kernel(
   const size_t offset = offsets[patch_idx];
 
   const int tid = threadIdx.x;
-  extern __shared__ float shared_mem[];
 
-  // partition whole chunk of shmem
-  auto* thread_pt_z_sm = shared_mem;
-  auto* iter_flag_sm = reinterpret_cast<int*>(&thread_pt_z_sm[WARP_SIZE]);
-  iter_flag_sm[tid]   = -1;
-  __syncthreads();
+  int local_iter{-1};
+  float local_z{0};
 
   int cum_cnt = 0;  // running total across iterations
 
@@ -73,15 +68,14 @@ __global__ void lbr_seed_kernel(
     int i = iter * WARP_SIZE + tid;
     bool local_flag = false;
 
-    // each thread checks if its point is valid and hasn’t been counted before
     if (i < (int)n) {
       float z = pt_z[offset + i];
       const bool flag = (!close_zone) || (z > close_zone_z_thresh);
-
-      if (flag && (iter_flag_sm[tid] == -1)) {
+      // each thread checks if its point is valid and it's not already holding a value
+      if (flag && (local_iter == -1)) {
         // Mark this thread’s slot as “counted”
-        thread_pt_z_sm[tid] = z;
-        iter_flag_sm[tid]    = iter;
+        local_z = z;
+        local_iter = iter;
         local_flag = true;
       }
     }
@@ -92,45 +86,52 @@ __global__ void lbr_seed_kernel(
     cum_cnt += this_iter_cnt;
 
     // do we have enough pts
-    if (cum_cnt >= (int)min_lpr_pts_thres) {
+    if (cum_cnt >= max_lpr_pts_thres) {
       break;
     }
   }
 
   // handle the case if we have more than enough pts
-  const uint useful_pts_num = min(cum_cnt, (int)min_lpr_pts_thres);
-   /*
-    EDGE CASE: n>WARP_SIZE, in close ring threads; first 15 threads of warp couldnt find valid pts, remaining 17 threads found.
-    We still need 3 more. in the next iter rest of the 15 threads finds valid points and loads into ShMem.
-    --> Now first use_pts_num(20) num of elements of thread_pt_z is actually ful of valid pts, but within the whole
-     thread_pt_z buffer last 17 and first 3 elements must be used.
-     IDEA: also keep track of in which iteration data was loaded into shmem.
-     then choose pts from lower iters (from left to right in buffer) and continue with higher iters if only
-     current iters were not enough to fill num_lpt_pts_thres. left to right increase rule is consistent in same iteration.
-  */
+  const uint useful_pts_num = min(cum_cnt, max_lpr_pts_thres);
+  /*
+   EDGE CASE: n>WARP_SIZE, in close ring threads; first 15 threads of warp couldnt find valid pts, remaining 17 threads found.
+   We still need 3 more. in the next iter rest of the 15 threads finds valid points and loads into ShMem.
+   --> Now, first use_pts_num(20) num of elements of thread_pt_z is actually full of valid pts, but within the whole
+    thread_pt_z buffer last 17 and first 3 elements must be used.
+    IDEA: also keep track of in which iteration data was loaded into shmem.
+    then choose pts from lower iters (from left to right in buffer) and continue with higher iters if only
+    current iters were not enough to fill num_lpt_pts_thres. left to right increase rule is consistent in same iteration.
+ */
 
   float sum_z = 0.0f;
   int used_cnt = 0;
-  if (tid == 0) {
-    for (int e = 0; e <= iter; ++e) {
-      // TODO : try to get rid of below loop with warp intrinsics
-      for (int th = 0; th < WARP_SIZE; ++th) {
-        if (used_cnt == (int)useful_pts_num) break;
-        if (iter_flag_sm[th] == e) {
-          sum_z += thread_pt_z_sm[th];
-          used_cnt++;
-        }
-      }
-      if (used_cnt == (int)useful_pts_num) break;
+  for (int e = 0; e <= iter; ++e) {
+    uint curr_iter_mask = __ballot_sync(FULL_MASK, e==local_iter);  // which threads holds zs from iter e
+    const int curr_iter_cnt = __popc(curr_iter_mask); // how many valid zs
+    const bool overflows = useful_pts_num < (used_cnt + curr_iter_cnt); // if adding all zs from e overflow total needed points
+    uint numel_contrib{0};
+    if (overflows){
+      // subset from current iter must be used
+      const uint subset_size = useful_pts_num - used_cnt;
+      const uint subset_mask = (1u<<(subset_size)) - 1; // mask the subset that'll be used for e
+      numel_contrib = subset_size;
+      curr_iter_mask = subset_mask ;
+    } else {
+      numel_contrib = curr_iter_cnt;
     }
+    // count+accum by warp reduction
+    float iter_sum = ((curr_iter_mask >> tid) & 1) ? local_z : 0;
+    for (int offset = 16; offset > 0; offset >>= 1)
+      iter_sum += __shfl_down_sync(FULL_MASK, iter_sum, offset);
+    iter_sum = __shfl_sync(FULL_MASK, iter_sum, 0);
+    sum_z += iter_sum;
+    used_cnt += numel_contrib;
   }
 
-  sum_z   = __shfl_sync(FULL_MASK, sum_z,   0);
-  used_cnt = __shfl_sync(FULL_MASK, used_cnt, 0);
-  const bool patch_non_empty = (used_cnt > 0);
-
-  const float threshold = cnst_lbr_margin + (patch_non_empty * (sum_z / used_cnt));
-  thres_d[patch_idx] = threshold;
+  if(tid==0){
+    float threshold = cnst_lbr_margin + (used_cnt > 0 ? sum_z / used_cnt : 0);
+    thres_d[patch_idx] = threshold;
+  }
 }
 
 __global__ void seed_mark_kernel(
@@ -156,8 +157,7 @@ void PatchWorkGPU<PointT>::extract_init_seeds_gpu()
   // for patches in first zone, we only consider the points that are above the sensor height
   // for patches in other zones, all points are used to calculate mean height in patch
   // variable num of threads per patch may be useful.
-  const size_t sm_size = WARP_SIZE * (sizeof(float) + sizeof(int));
-  lbr_seed_kernel<<<num_total_sectors_, WARP_SIZE, sm_size, stream_>>>(
+  lbr_seed_kernel<<<num_total_sectors_, WARP_SIZE, 0, stream_>>>(
                                                     patched_z_d,
                                                     num_pts_in_patch_d,
                                                     patch_offsets_d,
