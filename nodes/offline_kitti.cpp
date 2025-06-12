@@ -121,7 +121,9 @@ int main(int argc, char **argv) {
   PatchworkGroundSeg.reset(new PatchWork<PointType>(&nh));
   cout << "Target data: " << data_path << endl;
   KittiLoader loader(data_path);
-
+  double p_cum{0}, r_cum{0};
+  int cnt{0};
+  double cum_time =0;
   int N = loader.size();
   for (int n = max(0, start_frame); n < min(N, end_frame); ++n) {
     pcl::PointCloud<PointType> pc_curr;
@@ -207,7 +209,13 @@ int main(int argc, char **argv) {
     }
     pub_score("p", precision);
     pub_score("r", recall);
+    p_cum += precision;
+    r_cum += recall;
+    cum_time+= time_taken;
+    cnt++;
   }
-
+  cum_time *= 1000; // convert sec to ms
+  std::cout << "\033[1;34mMean Prec: " << p_cum/cnt << " Recall: " << r_cum/cnt << std::endl;
+  std::cout<< "Average time taken: " << cum_time/cnt << " msec\033[0m" << std::endl;
   return 0;
 }
