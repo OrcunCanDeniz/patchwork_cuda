@@ -1,10 +1,10 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>patchwork</name>
+  <name>patchwork_cuda</name>
   <version>0.0.0</version>
-  <description>patchwork package</description>
+  <description>patchwork_cuda package</description>
 
-  <maintainer email="shapelim@kaist.ac.kr">Hyungtae Lim</maintainer>
+  <maintainer email="orcun.c.deniz@gmail.com">Orcun Deniz</maintainer>
 
 
   <!-- One license tag required, multiple allowed, one license per tag -->
@@ -24,11 +24,4 @@
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>libpcl-all</exec_depend>
 
-
-
-  <!-- The export tag contains other, unspecified, tags -->
-  <export>
-    <!-- Other tools can request additional information be placed here -->
-
-  </export>
 </package>

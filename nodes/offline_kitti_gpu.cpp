@@ -6,7 +6,7 @@
 #define PCL_NO_PRECOMPILE
 #include <signal.h>
 
-#include <patchwork/node.h>
+#include <patchwork_cuda/node.h>
 #include <visualization_msgs/Marker.h>
 
 #include "label_generator/label_generator.hpp"

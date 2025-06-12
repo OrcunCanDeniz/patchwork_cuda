@@ -1,12 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(patchwork)
-
-
-option(VIZ "VIZ" OFF)
-
-if (VIZ)
-        add_compile_definitions(VIZ)
-endif (VIZ)
+project(patchwork_cuda)
 
 add_compile_options(-std=c++17)
 set(CMAKE_BUILD_TYPE "RelWithDebInfo")
@@ -93,6 +86,7 @@ target_link_libraries(patchwork_host
         zone_models_gpu
         patchwork_gpu
 )
+add_dependencies(patchwork_host ${PROJECT_NAME}_generate_messages_cpp)
 
 add_executable(patchwork_workbench nodes/patchwork_workbench.cpp)
 target_link_libraries(patchwork_workbench
@@ -109,22 +103,6 @@ target_link_libraries(offline_kitti_gpu
         patchwork_host
         stdc++fs)
 
-add_executable(ros_kitti nodes/ros_kitti.cpp)
-target_link_libraries(ros_kitti ${catkin_LIBRARIES} ${PCL_LIBRARIES} TBB::tbb)
-add_dependencies(ros_kitti patchwork_generate_messages_cpp)
-
-add_executable(ros_kitti_publisher nodes/ros_kitti_publisher.cpp)
-target_link_libraries(ros_kitti_publisher ${catkin_LIBRARIES} ${PCL_LIBRARIES} TBB::tbb)
-add_dependencies(ros_kitti_publisher patchwork_generate_messages_cpp)
-
-add_executable(pub_for_legoloam nodes/pub_for_legoloam.cpp)
-target_link_libraries(pub_for_legoloam ${catkin_LIBRARIES} ${PCL_LIBRARIES} TBB::tbb)
-add_dependencies(pub_for_legoloam patchwork_generate_messages_cpp)
-
 add_executable(offline_kitti nodes/offline_kitti.cpp)
 target_link_libraries(offline_kitti ${catkin_LIBRARIES} ${PCL_LIBRARIES} stdc++fs TBB::tbb)
-add_dependencies(offline_kitti patchwork_generate_messages_cpp)
-
-add_executable(offline_own_data nodes/offline_own_data.cpp)
-target_link_libraries(offline_own_data ${catkin_LIBRARIES} ${PCL_LIBRARIES} TBB::tbb)
-add_dependencies(offline_own_data patchwork_generate_messages_cpp)
+add_dependencies(offline_kitti ${PROJECT_NAME}_generate_messages_cpp)
