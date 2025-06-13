@@ -31,6 +31,7 @@ roslaunch patchwork_cuda offline_kitti_gpu.launch
 
 ![My CUDA Implementation](./img/pw_cuda.png)
 
+![My CUDA Implementation](./img/pw_kitti.gif)
 
 
 ### Prepare Offline KITTI dataset
