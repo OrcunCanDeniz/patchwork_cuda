@@ -1,16 +1,43 @@
 <launch>
-    <!-- Define an argument for data_path with a default value -->
-    <!-- See the example. It should indicate the sequence directory -->
+    <!-- Main parameter to switch between file and topic input -->
+    <arg name="use_topic_input" default="true" />
+    
+    <!-- Topic-based parameters -->
+    <arg name="input_topic" default="/lslidar_point_cloud" />
+    
+    <!-- File-based parameters -->
     <arg name="data_path" default="/home/orcun/kitti/labeled_dataset/sequences/04" />
-    <param name="/data_path" type="string" value="$(arg data_path)" />
+    <arg name="seq" default="00" />
+    <arg name="start_frame" default="0" />
+    <arg name="end_frame" default="10000" />
+    
+    <!-- Common parameters -->
+    <arg name="save_flag" default="false" />
+    <arg name="use_sor_before_save" default="false" />
+    <arg name="enable_benchmarking" default="false" />
+    <arg name="algorithm" default="patchwork" />
+    
+    <!-- Launch the hybrid patchwork node -->
     <node name="$(anon offline_kitti)" pkg="patchwork_cuda" type="offline_kitti_gpu" output="screen">
-        <rosparam param="/algorithm">"patchwork"</rosparam>
-        <rosparam param="/save_flag">false</rosparam>
-        <rosparam param="/use_sor_before_save">false</rosparam>
-        <rosparam param="/start_frame">0</rosparam>
-        <rosparam param="/end_frame">10000</rosparam>
-
+        <!-- Main mode parameter -->
+        <param name="use_topic_input" value="$(arg use_topic_input)" />
+        
+        <!-- Topic parameters -->
+        <param name="input_topic" value="$(arg input_topic)" />
+        
+        <!-- File parameters -->
+        <param name="data_path" value="$(arg data_path)" />
+        <param name="seq" value="$(arg seq)" />
+        <param name="start_frame" value="$(arg start_frame)" />
+        <param name="end_frame" value="$(arg end_frame)" />
+        
+        <!-- Common parameters -->
+        <param name="save_flag" value="$(arg save_flag)" />
+        <param name="use_sor_before_save" value="$(arg use_sor_before_save)" />
+        <param name="enable_benchmarking" value="$(arg enable_benchmarking)" />
+        <param name="algorithm" value="$(arg algorithm)" />
     </node>
 
-    <rosparam command="load" file="$(find patchwork)/config/params_kitti.yaml" />
+    <!-- Load patchwork parameters -->
+    <rosparam command="load" file="$(find patchwork_cuda)/config/params_kitti.yaml" />
 </launch>
